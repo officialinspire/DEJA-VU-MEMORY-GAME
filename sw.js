@@ -1,8 +1,7 @@
 // DEJA VU PWA service worker.
-// Version this cache whenever the app shell changes. Activation removes older
-// DEJA VU caches, while navigation uses network-first so GitHub Pages updates
-// are picked up promptly without sacrificing the cached offline app.
-const CACHE_NAME = 'deja-vu-v1.0.18-rc5';
+// App code uses network-first while online so GitHub Pages serves gameplay fixes
+// immediately. Cached fallbacks preserve offline play.
+const CACHE_NAME = 'deja-vu-v1.0.18-rc6';
 const CACHE_PREFIX = 'deja-vu-';
 
 const APP_SHELL = [
@@ -21,17 +20,26 @@ function isCacheable(response) {
 
 async function cacheResponse(request, response) {
   if (!isCacheable(response)) return response;
-  const cache = await caches.open(CACHE_NAME);
-  await cache.put(request, response.clone());
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(request, response.clone());
+  } catch (_) {
+    // A cache-write failure must never discard a healthy network response.
+  }
   return response;
 }
 
-async function navigationResponse(request) {
+async function networkFirst(request, navigationFallback = false) {
   try {
     const response = await fetch(request, { cache: 'no-cache' });
     return cacheResponse(request, response);
   } catch (_) {
-    return (await caches.match(request)) || (await caches.match('./index.html')) || (await caches.match('./'));
+    const cached = await caches.match(request);
+    if (cached) return cached;
+    if (navigationFallback) {
+      return (await caches.match('./index.html')) || (await caches.match('./')) || Response.error();
+    }
+    return Response.error();
   }
 }
 
@@ -46,13 +54,21 @@ async function staleWhileRevalidate(request) {
 }
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(
+        keys
+          .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+          .map((key) => caches.delete(key))
+      ))
       .then(() => self.clients.claim())
   );
 });
@@ -60,11 +76,24 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
+
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  // Let the browser handle byte-range media requests directly.
+  if (request.headers.has('range')) return;
+
   if (request.mode === 'navigate') {
-    event.respondWith(navigationResponse(request));
+    event.respondWith(networkFirst(request, true));
     return;
   }
+
+  // Gameplay code/styles should update on the first online load, not one load
+  // later through stale-while-revalidate.
+  if (request.destination === 'script' || request.destination === 'style') {
+    event.respondWith(networkFirst(request));
+    return;
+  }
+
   event.respondWith(staleWhileRevalidate(request));
 });
