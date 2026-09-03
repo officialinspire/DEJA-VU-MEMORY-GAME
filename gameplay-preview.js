@@ -27,11 +27,13 @@ function clearPreviewTimers() {
   previewTimer = 0;
   settleTimer = 0;
   previewToken += 1;
+  window.DEJA_VU_PREVIEW_ACTIVE = false;
 }
 
 function setPreviewInteractionLocked(locked) {
   cardGrid.classList.toggle('is-previewing', locked);
   cardGrid.setAttribute('aria-busy', locked ? 'true' : 'false');
+  window.DEJA_VU_PREVIEW_ACTIVE = locked;
 }
 
 function revealBoardForPreview() {
