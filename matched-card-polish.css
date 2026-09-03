@@ -1,8 +1,5 @@
-@import url('./responsive-board.css');
-
-/* Prompt 4: matched-card visual feedback.
-   Matched cards are disabled for input, but should remain visually prominent as
-   part of the player's memory map instead of inheriting the global disabled fade. */
+/* Matched-card visual feedback.
+   Responsive board rules are loaded explicitly by index.html. */
 
 .memory-card.is-matched:disabled {
   opacity: 1;
@@ -44,10 +41,7 @@
   outline-color: var(--success);
 }
 
-html.reduced-motion .memory-card.is-matched::after {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 18%, transparent);
-}
-
+html.reduced-motion .memory-card.is-matched::after,
 @media (prefers-reduced-motion: reduce) {
   .memory-card.is-matched::after {
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 18%, transparent);
