@@ -1,4 +1,4 @@
-/* Initial memorize phase + Prompt 10/12 card-flip and touch QA.
+/* Initial memorize phase + card-flip/touch QA.
    Keep front/back surfaces isolated, clipped, and deterministic across touch,
    preview, match, mismatch, and reduced-motion states. */
 
@@ -47,13 +47,12 @@
   transform: rotateY(180deg) translateZ(0.35px);
 }
 
+/* A selected card and a confirmed match always expose the face. */
 .memory-card.is-flipped .memory-card-inner,
 .memory-card.is-matched .memory-card-inner {
-  transform: rotateY(180deg) translateZ(0);
+  transform: rotateY(180deg) translateZ(0) !important;
 }
 
-/* A fresh board should appear already face-up rather than flashing card backs
-   and then animating open before the memorize interval starts. */
 .card-grid.is-preview-revealing .memory-card-inner {
   transition: none !important;
 }
@@ -84,7 +83,6 @@
   cursor: pointer;
 }
 
-/* Tactile press feedback must preserve whichever face is currently visible. */
 .memory-card:not(:disabled):not(.is-matched):active .memory-card-inner,
 .memory-card[data-pointer-active="true"] .memory-card-inner {
   transform: rotateY(0deg) scale(0.975) translateZ(0);
@@ -95,14 +93,33 @@
   transform: rotateY(180deg) scale(0.975) translateZ(0);
 }
 
-/* Once matched, freeze the card face-up. Do not replay a reverse flip when
-   index.js swaps is-flipped for is-matched after successful resolution. */
+/* Confirmed matches become permanent face-up landmarks. */
+.memory-card.is-matched {
+  opacity: 1 !important;
+  cursor: default;
+  box-shadow:
+    inset 0 0 0 3px color-mix(in srgb, var(--success) 84%, white 16%),
+    inset 0 0 18px color-mix(in srgb, var(--success) 20%, transparent),
+    0 0 14px color-mix(in srgb, var(--success) 30%, transparent);
+}
+
 .memory-card.is-matched .memory-card-inner {
   transition-property: none !important;
+  transform: rotateY(180deg) translateZ(0) !important;
 }
 
 .memory-card.is-matched .card-side-back {
-  visibility: hidden;
+  visibility: hidden !important;
+}
+
+.memory-card.is-matched .card-side-front {
+  visibility: visible !important;
+  opacity: 1 !important;
+  filter:
+    saturate(1.08)
+    brightness(1.05)
+    drop-shadow(0 0 6px color-mix(in srgb, var(--success) 78%, transparent))
+    drop-shadow(0 6px 7px rgba(0, 0, 0, 0.3));
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -125,8 +142,9 @@ html.reduced-motion .memory-card[data-pointer-active="true"] .memory-card-inner 
 }
 
 html.reduced-motion .memory-card.is-flipped:not(.is-matched):active .memory-card-inner,
-html.reduced-motion .memory-card.is-flipped[data-pointer-active="true"] .memory-card-inner {
-  transform: rotateY(180deg);
+html.reduced-motion .memory-card.is-flipped[data-pointer-active="true"] .memory-card-inner,
+html.reduced-motion .memory-card.is-matched .memory-card-inner {
+  transform: rotateY(180deg) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -136,5 +154,9 @@ html.reduced-motion .memory-card.is-flipped[data-pointer-active="true"] .memory-
 
   .card-grid.is-preview-revealing .memory-card-inner {
     transition: none !important;
+  }
+
+  .memory-card.is-matched .memory-card-inner {
+    transform: rotateY(180deg) !important;
   }
 }
