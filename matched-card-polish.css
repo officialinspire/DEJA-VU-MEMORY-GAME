@@ -41,7 +41,10 @@
   outline-color: var(--success);
 }
 
-html.reduced-motion .memory-card.is-matched::after,
+html.reduced-motion .memory-card.is-matched::after {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 18%, transparent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .memory-card.is-matched::after {
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 18%, transparent);
