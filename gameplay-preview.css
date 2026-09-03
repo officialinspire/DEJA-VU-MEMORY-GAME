@@ -1,4 +1,4 @@
-/* Initial memorize phase + Prompt 10 card-flip QA.
+/* Initial memorize phase + Prompt 10/12 card-flip and touch QA.
    Keep front/back surfaces isolated, clipped, and deterministic across touch,
    preview, match, mismatch, and reduced-motion states. */
 
@@ -7,6 +7,17 @@
   contain: layout paint;
   transform-style: preserve-3d;
   -webkit-transform-style: preserve-3d;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
+}
+
+.memory-card,
+.memory-card * {
+  -webkit-user-drag: none;
 }
 
 .memory-card-inner {
@@ -14,6 +25,7 @@
   transform: rotateY(0deg) translateZ(0);
   transform-style: preserve-3d;
   -webkit-transform-style: preserve-3d;
+  pointer-events: none;
 }
 
 .card-side {
@@ -24,6 +36,7 @@
   backface-visibility: hidden;
   transform-style: preserve-3d;
   -webkit-transform-style: preserve-3d;
+  pointer-events: none;
 }
 
 .card-side-back {
@@ -72,11 +85,13 @@
 }
 
 /* Tactile press feedback must preserve whichever face is currently visible. */
-.memory-card:not(:disabled):not(.is-matched):active .memory-card-inner {
+.memory-card:not(:disabled):not(.is-matched):active .memory-card-inner,
+.memory-card[data-pointer-active="true"] .memory-card-inner {
   transform: rotateY(0deg) scale(0.975) translateZ(0);
 }
 
-.memory-card.is-flipped:not(.is-matched):active .memory-card-inner {
+.memory-card.is-flipped:not(.is-matched):active .memory-card-inner,
+.memory-card.is-flipped[data-pointer-active="true"] .memory-card-inner {
   transform: rotateY(180deg) scale(0.975) translateZ(0);
 }
 
@@ -104,11 +119,13 @@ html.reduced-motion .card-grid.is-preview-revealing .memory-card-inner {
   transition: none !important;
 }
 
-html.reduced-motion .memory-card:not(:disabled):active .memory-card-inner {
+html.reduced-motion .memory-card:not(:disabled):active .memory-card-inner,
+html.reduced-motion .memory-card[data-pointer-active="true"] .memory-card-inner {
   transform: rotateY(0deg);
 }
 
-html.reduced-motion .memory-card.is-flipped:not(.is-matched):active .memory-card-inner {
+html.reduced-motion .memory-card.is-flipped:not(.is-matched):active .memory-card-inner,
+html.reduced-motion .memory-card.is-flipped[data-pointer-active="true"] .memory-card-inner {
   transform: rotateY(180deg);
 }
 
