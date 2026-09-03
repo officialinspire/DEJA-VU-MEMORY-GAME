@@ -1,4 +1,4 @@
-const CACHE_NAME = 'deja-vu-v1.0.6';
+const CACHE_NAME = 'deja-vu-v1.0.7';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,6 +8,8 @@ const APP_SHELL = [
   './index.js',
   './sprite-atlas.js',
   './save-integrity.js',
+  './stats-integrity.js',
+  './stats-semantics.js',
   './manifest.webmanifest',
   './card-flip-sprite-sheet.png',
   './logo.png',
