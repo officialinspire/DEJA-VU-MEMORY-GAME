@@ -1,4 +1,4 @@
-const CACHE_NAME = 'deja-vu-v1.0.9';
+const CACHE_NAME = 'deja-vu-v1.0.10';
 const APP_SHELL = [
   './',
   './index.html',
