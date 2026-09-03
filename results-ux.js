@@ -1,4 +1,4 @@
-// Prompt 15: completion/results and statistics presentation.
+// Completion/results and statistics presentation.
 // This module never writes statistics. index.js remains the single authority for
 // wins, perfect games, and best-metric persistence.
 
@@ -15,6 +15,19 @@ let runBaseline = null;
 let lastRenderedResultSignature = '';
 let statsRendering = false;
 
+function installStatsSemantics() {
+  const screen = document.querySelector('#screen-statistics');
+  if (!screen) return;
+  const heading = [...screen.querySelectorAll('h2')].find((node) => ['Personal Bests', 'Best Metrics'].includes(node.textContent.trim()));
+  if (heading) heading.textContent = 'Best Metrics';
+  if (!bestList || document.querySelector('#best-metrics-note')) return;
+  const note = document.createElement('p');
+  note.id = 'best-metrics-note';
+  note.className = 'stats-note';
+  note.textContent = 'Fastest time, fewest mistakes, and highest score are tracked independently for each difficulty.';
+  bestList.before(note);
+}
+
 function readStats() {
   try {
     const value = JSON.parse(localStorage.getItem(STATS_KEY) || '{}');
@@ -25,10 +38,7 @@ function readStats() {
 }
 
 function difficultyKeyFromBoard() {
-  const rows = Number(cardGrid?.getAttribute('aria-rowcount'));
-  const cols = Number(cardGrid?.getAttribute('aria-colcount'));
-  const table = window.DEJA_VU_BALANCE?.difficulties || {};
-  return Object.entries(table).find(([, item]) => item.rows === rows && item.cols === cols)?.[0] || 'easy';
+  return window.DEJA_VU_RUNTIME?.difficultyKeyFromBoard?.() || 'easy';
 }
 
 function formatTime(seconds) {
@@ -44,30 +54,20 @@ function snapshotRunBaseline() {
   const previous = stats.bests?.[key];
   runBaseline = {
     key,
-    best: previous ? {
-      time: Number(previous.time),
-      mistakes: Number(previous.mistakes),
-      score: Number(previous.score),
-    } : null,
+    best: previous ? { time: Number(previous.time), mistakes: Number(previous.mistakes), score: Number(previous.score) } : null,
   };
   lastRenderedResultSignature = '';
 }
 
 function parseCompletionSummary() {
-  const text = completeSummary?.textContent || '';
-  const match = text.match(/(\d+)\s+moves\s+·\s+(\d+)\s+mistakes\s+·\s+(\d{2}):(\d{2})/i);
+  const match = (completeSummary?.textContent || '').match(/(\d+)\s+moves\s+·\s+(\d+)\s+mistakes\s+·\s+(\d{2}):(\d{2})/i);
   if (!match) return null;
-  return {
-    moves: Number(match[1]),
-    mistakes: Number(match[2]),
-    elapsed: Number(match[3]) * 60 + Number(match[4]),
-  };
+  return { moves: Number(match[1]), mistakes: Number(match[2]), elapsed: Number(match[3]) * 60 + Number(match[4]) };
 }
 
 function ensureCompletionDetails() {
   let details = document.querySelector('#completion-details');
   if (details) return details;
-
   details = document.createElement('div');
   details.id = 'completion-details';
   details.className = 'completion-details';
@@ -95,7 +95,7 @@ function renderCompletionResult() {
   if (signature === lastRenderedResultSignature) return;
   lastRenderedResultSignature = signature;
 
-  const label = window.DEJA_VU_BALANCE?.difficulties?.[key]?.label || difficultyLabel?.textContent || key;
+  const label = window.DEJA_VU_RUNTIME?.difficulties?.[key]?.label || difficultyLabel?.textContent || key;
   const details = ensureCompletionDetails();
   details.innerHTML = `
     <p class="completion-difficulty">${label}</p>
@@ -107,7 +107,7 @@ function renderCompletionResult() {
     </div>`;
 
   if (completeSummary) completeSummary.hidden = true;
-  if (completeGrade) completeGrade.setAttribute('aria-describedby', 'completion-details');
+  completeGrade?.setAttribute('aria-describedby', 'completion-details');
 }
 
 function renderStatisticsRows() {
@@ -117,8 +117,7 @@ function renderStatisticsRows() {
 
   statsRendering = true;
   const stats = readStats();
-  const entries = Object.entries(window.DEJA_VU_BALANCE?.difficulties || {});
-
+  const entries = Object.entries(window.DEJA_VU_RUNTIME?.difficulties || {});
   rows.forEach((row, index) => {
     const [key, difficulty] = entries[index] || [];
     if (!key || !difficulty) return;
@@ -136,11 +135,12 @@ function renderStatisticsRows() {
   statsRendering = false;
 }
 
+installStatsSemantics();
+
 if (cardGrid) {
-  const gridObserver = new MutationObserver(() => {
+  new MutationObserver(() => {
     if (cardGrid.querySelector('.memory-card')) snapshotRunBaseline();
-  });
-  gridObserver.observe(cardGrid, { childList: true });
+  }).observe(cardGrid, { childList: true });
 }
 
 completeDialog?.addEventListener('close', () => {
@@ -148,10 +148,6 @@ completeDialog?.addEventListener('close', () => {
   lastRenderedResultSignature = '';
 });
 
-const completionObserver = completeDialog ? new MutationObserver(renderCompletionResult) : null;
-completionObserver?.observe(completeDialog, { attributes: true, attributeFilter: ['open'], childList: true, subtree: true });
-
-const statsObserver = bestList ? new MutationObserver(renderStatisticsRows) : null;
-statsObserver?.observe(bestList, { childList: true });
-
+if (completeDialog) new MutationObserver(renderCompletionResult).observe(completeDialog, { attributes: true, attributeFilter: ['open'], childList: true, subtree: true });
+if (bestList) new MutationObserver(renderStatisticsRows).observe(bestList, { childList: true });
 renderStatisticsRows();
