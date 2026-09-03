@@ -7,8 +7,10 @@ const gameMessage = document.querySelector('#game-message');
 const difficultyDialog = document.querySelector('#difficulty-dialog');
 const playAgainButton = document.querySelector('#btn-play-again');
 const continueButton = document.querySelector('#btn-continue');
+const pauseButton = document.querySelector('#btn-pause');
+const pauseDialog = document.querySelector('#pause-dialog');
 
-const BALANCE = window.DEJA_VU_BALANCE;
+const BALANCE = window.DEJA_VU_RUNTIME || window.DEJA_VU_BALANCE;
 const PREVIEW_CONFIG = BALANCE?.difficulties || Object.freeze({
   easy: Object.freeze({ memorizeMs: 4000, rows: 3, cols: 4 }),
   intermediate: Object.freeze({ memorizeMs: 5000, rows: 4, cols: 4 }),
@@ -23,14 +25,26 @@ let previewToken = 0;
 let previewTimer = 0;
 let settleTimer = 0;
 let countdownTimer = 0;
+let previewPhase = 'idle';
+let phaseRemainingMs = 0;
+let phaseStartedAt = 0;
+let previewCards = [];
 
-function clearPreviewTimers() {
+function clearScheduledPreviewWork() {
   window.clearTimeout(previewTimer);
   window.clearTimeout(settleTimer);
   window.clearInterval(countdownTimer);
   previewTimer = 0;
   settleTimer = 0;
   countdownTimer = 0;
+}
+
+function clearPreviewTimers() {
+  clearScheduledPreviewWork();
+  previewPhase = 'idle';
+  phaseRemainingMs = 0;
+  phaseStartedAt = 0;
+  previewCards = [];
   previewToken += 1;
   window.DEJA_VU_PREVIEW_ACTIVE = false;
 }
@@ -42,16 +56,91 @@ function setPreviewInteractionLocked(locked) {
 }
 
 function difficultyFromBoard() {
-  const rows = Number(cardGrid.getAttribute('aria-rowcount'));
-  const cols = Number(cardGrid.getAttribute('aria-colcount'));
-  return Object.entries(PREVIEW_CONFIG).find(([, config]) => config.rows === rows && config.cols === cols)?.[0] || 'easy';
+  return BALANCE?.difficultyKeyFromBoard?.() || (() => {
+    const rows = Number(cardGrid.getAttribute('aria-rowcount'));
+    const cols = Number(cardGrid.getAttribute('aria-colcount'));
+    return Object.entries(PREVIEW_CONFIG).find(([, config]) => config.rows === rows && config.cols === cols)?.[0] || 'easy';
+  })();
 }
 
-function setMemorizeMessage(secondsRemaining) {
-  const seconds = Math.max(1, Math.ceil(secondsRemaining));
+function setMemorizeMessage(millisecondsRemaining) {
+  const seconds = Math.max(1, Math.ceil(millisecondsRemaining / 1000));
   gameMessage.textContent = `Memorize the board — ${seconds}`;
   gameMessage.classList.remove('is-error', 'is-success');
   gameMessage.classList.add('is-preview-message');
+}
+
+function previewCanRun() {
+  return !document.hidden && !pauseDialog?.open;
+}
+
+function updateRemainingFromElapsed() {
+  if (!phaseStartedAt || phaseRemainingMs <= 0) return;
+  phaseRemainingMs = Math.max(0, phaseRemainingMs - (performance.now() - phaseStartedAt));
+  phaseStartedAt = 0;
+}
+
+function pausePreviewClock() {
+  if (!cardGrid.classList.contains('is-previewing') || previewPhase === 'idle') return;
+  updateRemainingFromElapsed();
+  clearScheduledPreviewWork();
+}
+
+function finishPreview(token) {
+  if (token !== previewToken) return;
+  previewPhase = 'idle';
+  phaseRemainingMs = 0;
+  phaseStartedAt = 0;
+  setPreviewInteractionLocked(false);
+  cardGrid.dataset.previewComplete = 'true';
+  previewCards.forEach((card) => card.removeAttribute('tabindex'));
+  previewCards = [];
+  gameMessage.textContent = 'Go! Tap a card to reveal it.';
+  gameMessage.classList.remove('is-preview-message');
+  cardGrid.querySelector('.memory-card:not(:disabled)')?.focus({ preventScroll: true });
+}
+
+function beginSettlePhase(token) {
+  if (token !== previewToken) return;
+  previewCards.forEach((card) => {
+    if (card.classList.contains('is-matched')) return;
+    card.classList.remove('is-flipped', 'is-preview-card');
+  });
+  gameMessage.textContent = 'Cards down… get ready.';
+  previewPhase = 'settle';
+  phaseRemainingMs = FLIP_SETTLE_MS;
+  resumePreviewClock();
+}
+
+function resumePreviewClock() {
+  if (!cardGrid.classList.contains('is-previewing') || previewPhase === 'idle' || !previewCanRun()) return;
+  clearScheduledPreviewWork();
+  const token = previewToken;
+  phaseStartedAt = performance.now();
+
+  if (previewPhase === 'memorize') {
+    setMemorizeMessage(phaseRemainingMs);
+    countdownTimer = window.setInterval(() => {
+      if (token !== previewToken || previewPhase !== 'memorize') return;
+      const remaining = Math.max(0, phaseRemainingMs - (performance.now() - phaseStartedAt));
+      if (remaining > 0) setMemorizeMessage(remaining);
+    }, 250);
+
+    previewTimer = window.setTimeout(() => {
+      if (token !== previewToken || previewPhase !== 'memorize') return;
+      clearScheduledPreviewWork();
+      phaseRemainingMs = 0;
+      phaseStartedAt = 0;
+      beginSettlePhase(token);
+    }, phaseRemainingMs);
+    return;
+  }
+
+  settleTimer = window.setTimeout(() => {
+    if (token !== previewToken || previewPhase !== 'settle') return;
+    clearScheduledPreviewWork();
+    finishPreview(token);
+  }, phaseRemainingMs);
 }
 
 function revealBoardForPreview() {
@@ -66,6 +155,7 @@ function revealBoardForPreview() {
   const config = PREVIEW_CONFIG[difficultyKey];
   const duration = config.memorizeMs ?? config.durationMs ?? 4000;
   pendingDifficulty = '';
+  previewCards = cards;
 
   cardGrid.dataset.previewComplete = 'false';
   cardGrid.dataset.previewDifficulty = difficultyKey;
@@ -79,47 +169,15 @@ function revealBoardForPreview() {
     card.setAttribute('tabindex', '-1');
   });
 
-  const previewStartedAt = performance.now();
-  setMemorizeMessage(duration / 1000);
-
-  countdownTimer = window.setInterval(() => {
-    if (token !== previewToken) return;
-    const remainingMs = Math.max(0, duration - (performance.now() - previewStartedAt));
-    if (remainingMs <= 0) {
-      window.clearInterval(countdownTimer);
-      countdownTimer = 0;
-      return;
-    }
-    setMemorizeMessage(remainingMs / 1000);
-  }, 250);
+  previewPhase = 'memorize';
+  phaseRemainingMs = duration;
+  setMemorizeMessage(duration);
 
   requestAnimationFrame(() => {
     requestAnimationFrame(() => cardGrid.classList.remove('is-preview-revealing'));
   });
 
-  previewTimer = window.setTimeout(() => {
-    if (token !== previewToken) return;
-    window.clearInterval(countdownTimer);
-    countdownTimer = 0;
-
-    cards.forEach((card) => {
-      if (card.classList.contains('is-matched')) return;
-      card.classList.remove('is-flipped', 'is-preview-card');
-    });
-
-    gameMessage.textContent = 'Cards down… get ready.';
-
-    settleTimer = window.setTimeout(() => {
-      if (token !== previewToken) return;
-
-      setPreviewInteractionLocked(false);
-      cardGrid.dataset.previewComplete = 'true';
-      cards.forEach((card) => card.removeAttribute('tabindex'));
-      gameMessage.textContent = 'Go! Tap a card to reveal it.';
-      gameMessage.classList.remove('is-preview-message');
-      cardGrid.querySelector('.memory-card:not(:disabled)')?.focus({ preventScroll: true });
-    }, FLIP_SETTLE_MS);
-  }, duration);
+  if (token === previewToken) resumePreviewClock();
 }
 
 function markFreshBoardPending(difficultyKey = '') {
@@ -142,9 +200,18 @@ continueButton?.addEventListener('click', () => {
   clearPreviewTimers();
   pendingFreshBoard = false;
   pendingDifficulty = '';
-  cardGrid.classList.remove('is-preview-revealing');
+  cardGrid.classList.remove('is-preview-revealing', 'is-previewing');
   cardGrid.dataset.previewComplete = 'true';
+  cardGrid.setAttribute('aria-busy', 'false');
 }, true);
+
+// Manual pause/backgrounding freezes the study countdown instead of consuming it.
+pauseButton?.addEventListener('click', pausePreviewClock, true);
+pauseDialog?.addEventListener('close', () => requestAnimationFrame(resumePreviewClock));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) pausePreviewClock();
+  else requestAnimationFrame(resumePreviewClock);
+});
 
 // Block all card activation while the initial board is being memorized or hiding.
 cardGrid.addEventListener('click', (event) => {
@@ -162,7 +229,7 @@ cardGrid.addEventListener('pointerdown', (event) => {
 
 cardGrid.addEventListener('keydown', (event) => {
   if (!cardGrid.classList.contains('is-previewing')) return;
-  if (['Enter', ' '].includes(event.key)) {
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', ' '].includes(event.key)) {
     event.preventDefault();
     event.stopImmediatePropagation();
   }
