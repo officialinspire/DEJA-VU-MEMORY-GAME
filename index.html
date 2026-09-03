@@ -24,6 +24,7 @@
   <link rel="icon" href="./icons/icon-192.png" type="image/png">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./matched-card-polish.css">
+  <link rel="stylesheet" href="./gameplay-preview.css">
 </head>
 <body>
   <main id="app">
@@ -114,9 +115,10 @@
           <span class="sprite-card sprite-symbol"></span>
         </div>
         <ol>
-          <li>Flip two cards and study their shapes.</li>
+          <li>Memorize the revealed board before the cards flip face-down.</li>
+          <li>Tap two hidden cards to reveal them.</li>
           <li>A matching pair stays face up.</li>
-          <li>A mismatch counts as one mistake.</li>
+          <li>A mismatch counts as one mistake and flips back down.</li>
           <li>Clear the board with the fewest mistakes and fastest time.</li>
         </ol>
         <p><strong>Keyboard:</strong> use the arrow keys to move, Enter or Space to flip, and Escape to pause.</p>
@@ -210,5 +212,6 @@
   <script src="./stats-semantics.js"></script>
   <script type="module" src="./sprite-atlas.js"></script>
   <script type="module" src="./index.js"></script>
+  <script type="module" src="./gameplay-preview.js"></script>
 </body>
 </html>
