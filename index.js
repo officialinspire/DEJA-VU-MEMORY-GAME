@@ -136,6 +136,10 @@ function installCardFlipPolish() {
   document.head.append(style);
 }
 
+function createSessionId() {
+  return crypto.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function createEmptyGame() {
   return {
     version: 1,
@@ -151,14 +155,20 @@ function createEmptyGame() {
     locked: false,
     turn: 'idle',
     completed: false,
+    sessionId: '',
+    turnId: 0,
   };
 }
 
 function scheduleGameplayTask(callback, delay) {
   const generation = gameGeneration;
+  const sessionId = game.sessionId;
+  const turnId = game.turnId;
   const timer = window.setTimeout(() => {
     gameplayTimers.delete(timer);
     if (generation !== gameGeneration) return;
+    if (sessionId !== game.sessionId) return;
+    if (turnId !== game.turnId) return;
     callback();
   }, delay);
   gameplayTimers.add(timer);
@@ -242,7 +252,7 @@ function beginExperience() {
 
 function showMenu() {
   introVideo.pause();
-  cancelGameplayTasks();
+  beginGameGeneration();
   if (game.active) resetTransientTurn();
   if (pauseDialog.open) pauseDialog.close();
   if (completeDialog.open) completeDialog.close();
@@ -300,6 +310,7 @@ function startNewGame(difficultyKey, skipConfirm = false) {
     active: true,
     difficulty: difficultyKey,
     deck: createDeck(difficulty.pairs),
+    sessionId: createSessionId(),
   };
   statistics.played += 1;
   writeStorage(STORAGE.stats, statistics);
@@ -327,6 +338,8 @@ function resumeSavedGame() {
     locked: false,
     turn: 'idle',
     completed: false,
+    sessionId: createSessionId(),
+    turnId: 0,
     deck: saved.deck.map((card) => ({ ...card })),
   };
   renderGame();
@@ -345,6 +358,8 @@ function saveGame() {
     locked: false,
     turn: 'idle',
     completed: false,
+    sessionId: '',
+    turnId: 0,
     deck: game.deck.map((card) => ({ ...card })),
   };
   writeStorage(STORAGE.game, stableGame);
@@ -403,6 +418,7 @@ function flipCard(index) {
   const button = cardGrid.querySelector(`[data-index="${index}"]`);
   if (!card || card.matched || game.open.includes(index) || !button || button.disabled) return;
 
+  if (game.open.length === 0) game.turnId += 1;
   game.open.push(index);
   game.turn = game.open.length === 1 ? 'one-open' : 'resolving';
   button.classList.add('is-flipped');
@@ -529,7 +545,7 @@ function completeGame() {
   game.paused = true;
   game.locked = true;
   game.turn = 'complete';
-  cancelGameplayTasks();
+  beginGameGeneration();
   removeStorage(STORAGE.game);
   updateContinueButton();
 
