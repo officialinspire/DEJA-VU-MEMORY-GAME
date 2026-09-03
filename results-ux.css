@@ -1,0 +1,94 @@
+/* Prompt 15: completion results and statistics clarity. */
+
+.completion-details {
+  width: min(100%, 26rem);
+  margin: 0.85rem auto 0.95rem;
+}
+
+.completion-difficulty {
+  margin: 0 0 0.55rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.14em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.completion-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.completion-metrics > div {
+  min-width: 0;
+  padding: 0.7rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  text-align: center;
+}
+
+.completion-metrics span {
+  display: flex;
+  min-height: 1.15rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.completion-metrics strong {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 1.08rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.new-best-badge {
+  display: inline-flex;
+  padding: 0.12rem 0.28rem;
+  border: 1px solid color-mix(in srgb, var(--success) 55%, transparent);
+  border-radius: 999px;
+  color: var(--success);
+  font-size: 0.5rem;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.best-metrics-row {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, 0.9fr) repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.best-metric {
+  display: grid;
+  gap: 0.08rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.best-metric small {
+  color: var(--muted);
+  font-size: 0.58rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+@media (max-width: 430px) {
+  .best-metrics-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .best-metrics-row > strong {
+    grid-column: 1 / -1;
+  }
+}
