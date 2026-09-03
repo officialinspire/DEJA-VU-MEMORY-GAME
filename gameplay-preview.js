@@ -8,12 +8,12 @@ const difficultyDialog = document.querySelector('#difficulty-dialog');
 const playAgainButton = document.querySelector('#btn-play-again');
 const continueButton = document.querySelector('#btn-continue');
 
-// Prompt 11: one authoritative configuration for the required study phase.
-const PREVIEW_CONFIG = Object.freeze({
-  easy: Object.freeze({ durationMs: 4000, rows: 3, cols: 4 }),
-  intermediate: Object.freeze({ durationMs: 5000, rows: 4, cols: 4 }),
-  advanced: Object.freeze({ durationMs: 6000, rows: 4, cols: 5 }),
-  insane: Object.freeze({ durationMs: 8000, rows: 6, cols: 5 }),
+const BALANCE = window.DEJA_VU_BALANCE;
+const PREVIEW_CONFIG = BALANCE?.difficulties || Object.freeze({
+  easy: Object.freeze({ memorizeMs: 4000, rows: 3, cols: 4 }),
+  intermediate: Object.freeze({ memorizeMs: 5000, rows: 4, cols: 4 }),
+  advanced: Object.freeze({ memorizeMs: 6000, rows: 4, cols: 5 }),
+  insane: Object.freeze({ memorizeMs: 8000, rows: 6, cols: 5 }),
 });
 
 const FLIP_SETTLE_MS = 480;
@@ -64,7 +64,7 @@ function revealBoardForPreview() {
     ? pendingDifficulty
     : difficultyFromBoard();
   const config = PREVIEW_CONFIG[difficultyKey];
-  const duration = config.durationMs;
+  const duration = config.memorizeMs ?? config.durationMs ?? 4000;
   pendingDifficulty = '';
 
   cardGrid.dataset.previewComplete = 'false';
@@ -173,8 +173,6 @@ const observer = new MutationObserver(() => {
   const cards = cardGrid.querySelectorAll('.memory-card');
   if (!cards.length) return;
   pendingFreshBoard = false;
-  // MutationObserver callbacks run before paint, so the first visible frame of
-  // a new game is already the face-up memorization board.
   revealBoardForPreview();
 });
 
