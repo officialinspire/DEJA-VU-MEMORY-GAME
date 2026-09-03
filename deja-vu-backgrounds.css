@@ -18,6 +18,18 @@
 .start-screen,
 .menu-screen,
 .game-screen {
+  /* These three screens intentionally keep the DEJA VU identity palette even
+     when panel/settings themes change. This prevents low-contrast text when a
+     user selects light mode while preserving theme behavior elsewhere. */
+  --text: #f8f5ff;
+  --muted: #c4b7d8;
+  --line: rgba(202, 166, 255, 0.22);
+  --surface: rgba(45, 20, 73, 0.9);
+  --surface-soft: rgba(54, 27, 86, 0.7);
+  --accent: #b98aff;
+  --accent-2: #67d9ff;
+  --accent-ink: #150625;
+  color: var(--text);
   isolation: isolate;
   background:
     radial-gradient(circle at 18% 8%, rgba(164, 108, 255, 0.25), transparent 34%),
@@ -84,8 +96,6 @@
   will-change: transform;
 }
 
-/* Geometric silhouettes echo the card-face vocabulary without adding another
-   image asset or competing with the playable card sprites. */
 .deja-shape.circle { border-radius: 50%; background: currentColor; }
 .deja-shape.square { border-radius: 14%; background: currentColor; }
 .deja-shape.oval { background: currentColor; clip-path: ellipse(48% 32% at 50% 50%); }
@@ -137,6 +147,12 @@
   box-shadow: inset 0 1px rgba(255,255,255,.035), 0 8px 24px rgba(4, 0, 12, .18);
   backdrop-filter: blur(7px);
 }
+
+.game-screen .game-stats span,
+.game-screen .game-message,
+.game-screen .pairs-label,
+.menu-screen .menu-footer a,
+.start-screen .start-prompt { color: var(--muted); }
 
 .game-screen .progress-track {
   background: rgba(9, 3, 20, 0.58);
