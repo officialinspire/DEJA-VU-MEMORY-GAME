@@ -31,10 +31,26 @@ const PATTERNS = [
   { col: 1, row: 3, name: 'purple spiral' },
 ];
 
-const CARD_FLIP_MS = 430;
-const MATCH_RESOLVE_MS = CARD_FLIP_MS + 30;
-const MISMATCH_STUDY_MS = 920;
-const MISMATCH_FLIP_BACK_MS = CARD_FLIP_MS + 40;
+const TIMING = Object.freeze({
+  normal: Object.freeze({
+    cardFlip: 430,
+    matchResolve: 460,
+    mismatchStudy: 920,
+    mismatchFlipBack: 470,
+    completionDialog: 450,
+  }),
+  reduced: Object.freeze({
+    cardFlip: 1,
+    matchResolve: 10,
+    mismatchStudy: 120,
+    mismatchFlipBack: 10,
+    completionDialog: 10,
+  }),
+});
+
+function timing(name) {
+  return (settings.reducedMotion ? TIMING.reduced : TIMING.normal)[name];
+}
 
 const DEFAULT_SETTINGS = {
   theme: 'cyber',
@@ -86,7 +102,7 @@ function installCardFlipPolish() {
   const style = document.createElement('style');
   style.id = 'deja-vu-card-flip-polish';
   style.textContent = `
-    :root { --card-flip-duration: ${CARD_FLIP_MS}ms; }
+    :root { --card-flip-duration: ${TIMING.normal.cardFlip}ms; }
     .memory-card {
       transform: translateZ(0);
       -webkit-tap-highlight-color: transparent;
@@ -114,7 +130,7 @@ function installCardFlipPolish() {
       transition: none !important;
     }
     .reduced-motion .memory-card-inner {
-      transition-duration: 1ms !important;
+      transition-duration: ${TIMING.reduced.cardFlip}ms !important;
     }
   `;
   document.head.append(style);
@@ -412,10 +428,7 @@ function flipCard(index) {
   updateGameDisplay();
 
   if (first.pattern === second.pattern) {
-    scheduleGameplayTask(
-      () => resolveMatch(firstIndex, secondIndex),
-      settings.reducedMotion ? 10 : MATCH_RESOLVE_MS
-    );
+    scheduleGameplayTask(() => resolveMatch(firstIndex, secondIndex), timing('matchResolve'));
   } else {
     game.mistakes += 1;
     updateGameDisplay();
@@ -425,10 +438,7 @@ function flipCard(index) {
     const secondButton = cardGrid.querySelector(`[data-index="${secondIndex}"]`);
     firstButton?.classList.add('is-wrong');
     secondButton?.classList.add('is-wrong');
-    scheduleGameplayTask(
-      () => beginMismatchFlipBack(firstIndex, secondIndex),
-      settings.reducedMotion ? 120 : MISMATCH_STUDY_MS
-    );
+    scheduleGameplayTask(() => beginMismatchFlipBack(firstIndex, secondIndex), timing('mismatchStudy'));
   }
 }
 
@@ -496,10 +506,7 @@ function beginMismatchFlipBack(firstIndex, secondIndex) {
   });
 
   setGameMessage('Try again.');
-  scheduleGameplayTask(
-    () => finishMismatch(firstIndex, secondIndex),
-    settings.reducedMotion ? 10 : MISMATCH_FLIP_BACK_MS
-  );
+  scheduleGameplayTask(() => finishMismatch(firstIndex, secondIndex), timing('mismatchFlipBack'));
 }
 
 function finishMismatch(firstIndex, secondIndex) {
@@ -556,7 +563,7 @@ function completeGame() {
     completeDialog.showModal();
     document.querySelector('#btn-play-again').focus();
     playSound('win');
-  }, settings.reducedMotion ? 10 : 450);
+  }, timing('completionDialog'));
 }
 
 function pauseGame() {
