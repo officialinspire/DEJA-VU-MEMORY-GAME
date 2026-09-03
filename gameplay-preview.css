@@ -1,4 +1,49 @@
-/* Initial memorize phase + tap feedback. */
+/* Initial memorize phase + Prompt 10 card-flip QA.
+   Keep front/back surfaces isolated, clipped, and deterministic across touch,
+   preview, match, mismatch, and reduced-motion states. */
+
+.memory-card {
+  overflow: hidden;
+  contain: layout paint;
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+}
+
+.memory-card-inner {
+  border-radius: inherit;
+  transform: rotateY(0deg) translateZ(0);
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+}
+
+.card-side {
+  overflow: hidden;
+  border-radius: inherit;
+  background-clip: padding-box;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+}
+
+.card-side-back {
+  transform: rotateY(0deg) translateZ(0.35px);
+}
+
+.card-side-front {
+  transform: rotateY(180deg) translateZ(0.35px);
+}
+
+.memory-card.is-flipped .memory-card-inner,
+.memory-card.is-matched .memory-card-inner {
+  transform: rotateY(180deg) translateZ(0);
+}
+
+/* A fresh board should appear already face-up rather than flashing card backs
+   and then animating open before the memorize interval starts. */
+.card-grid.is-preview-revealing .memory-card-inner {
+  transition: none !important;
+}
 
 .card-grid.is-previewing .memory-card {
   pointer-events: none;
@@ -26,12 +71,23 @@
   cursor: pointer;
 }
 
+/* Tactile press feedback must preserve whichever face is currently visible. */
 .memory-card:not(:disabled):not(.is-matched):active .memory-card-inner {
-  transform: scale(0.975);
+  transform: rotateY(0deg) scale(0.975) translateZ(0);
 }
 
 .memory-card.is-flipped:not(.is-matched):active .memory-card-inner {
-  transform: rotateY(180deg) scale(0.975);
+  transform: rotateY(180deg) scale(0.975) translateZ(0);
+}
+
+/* Once matched, freeze the card face-up. Do not replay a reverse flip when
+   index.js swaps is-flipped for is-matched after successful resolution. */
+.memory-card.is-matched .memory-card-inner {
+  transition-property: none !important;
+}
+
+.memory-card.is-matched .card-side-back {
+  visibility: hidden;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -40,10 +96,28 @@
   }
 }
 
+html.reduced-motion .memory-card-inner {
+  transition-duration: 1ms !important;
+}
+
+html.reduced-motion .card-grid.is-preview-revealing .memory-card-inner {
+  transition: none !important;
+}
+
 html.reduced-motion .memory-card:not(:disabled):active .memory-card-inner {
-  transform: none;
+  transform: rotateY(0deg);
 }
 
 html.reduced-motion .memory-card.is-flipped:not(.is-matched):active .memory-card-inner {
   transform: rotateY(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-card-inner {
+    transition-duration: 1ms !important;
+  }
+
+  .card-grid.is-preview-revealing .memory-card-inner {
+    transition: none !important;
+  }
 }
