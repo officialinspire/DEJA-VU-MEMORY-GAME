@@ -31,6 +31,11 @@ const PATTERNS = [
   { col: 1, row: 3, name: 'purple spiral' },
 ];
 
+const CARD_FLIP_MS = 430;
+const MATCH_RESOLVE_MS = CARD_FLIP_MS + 30;
+const MISMATCH_STUDY_MS = 920;
+const MISMATCH_FLIP_BACK_MS = CARD_FLIP_MS + 40;
+
 const DEFAULT_SETTINGS = {
   theme: 'cyber',
   mode: 'dark',
@@ -75,6 +80,45 @@ const music = new Audio('./deja-vu-theme.mp3');
 music.loop = true;
 music.preload = 'auto';
 music.volume = 0;
+
+function installCardFlipPolish() {
+  if (document.querySelector('#deja-vu-card-flip-polish')) return;
+  const style = document.createElement('style');
+  style.id = 'deja-vu-card-flip-polish';
+  style.textContent = `
+    :root { --card-flip-duration: ${CARD_FLIP_MS}ms; }
+    .memory-card {
+      transform: translateZ(0);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .memory-card-inner {
+      will-change: transform;
+      transform-origin: center center;
+      transition-duration: var(--card-flip-duration) !important;
+    }
+    .card-side {
+      transform-style: preserve-3d;
+      -webkit-transform-style: preserve-3d;
+    }
+    .card-side-back {
+      transform: rotateY(0deg) translateZ(0.2px);
+    }
+    .card-side-front {
+      transform: rotateY(180deg) translateZ(0.2px);
+    }
+    .memory-card.is-flipped,
+    .memory-card.is-matched {
+      pointer-events: none;
+    }
+    .memory-card.is-matched .memory-card-inner {
+      transition: none !important;
+    }
+    .reduced-motion .memory-card-inner {
+      transition-duration: 1ms !important;
+    }
+  `;
+  document.head.append(style);
+}
 
 function createEmptyGame() {
   return {
@@ -370,7 +414,7 @@ function flipCard(index) {
   if (first.pattern === second.pattern) {
     scheduleGameplayTask(
       () => resolveMatch(firstIndex, secondIndex),
-      settings.reducedMotion ? 10 : 360
+      settings.reducedMotion ? 10 : MATCH_RESOLVE_MS
     );
   } else {
     game.mistakes += 1;
@@ -382,8 +426,8 @@ function flipCard(index) {
     firstButton?.classList.add('is-wrong');
     secondButton?.classList.add('is-wrong');
     scheduleGameplayTask(
-      () => resolveMismatch(firstIndex, secondIndex),
-      settings.reducedMotion ? 120 : 920
+      () => beginMismatchFlipBack(firstIndex, secondIndex),
+      settings.reducedMotion ? 120 : MISMATCH_STUDY_MS
     );
   }
 }
@@ -416,10 +460,11 @@ function resolveMatch(firstIndex, secondIndex) {
   [firstIndex, secondIndex].forEach((index) => {
     const button = cardGrid.querySelector(`[data-index="${index}"]`);
     if (!button) return;
-    button.classList.remove('is-flipped');
     button.classList.add('is-matched');
+    button.classList.remove('is-flipped');
     button.disabled = true;
     button.setAttribute('aria-label', `Matched ${PATTERNS[game.deck[index].pattern].name}`);
+    button.setAttribute('aria-pressed', 'true');
   });
 
   updateGameDisplay();
@@ -435,7 +480,7 @@ function resolveMatch(firstIndex, secondIndex) {
   }
 }
 
-function resolveMismatch(firstIndex, secondIndex) {
+function beginMismatchFlipBack(firstIndex, secondIndex) {
   if (!isCurrentResolvingPair(firstIndex, secondIndex)) return;
   const first = game.deck[firstIndex];
   const second = game.deck[secondIndex];
@@ -444,12 +489,22 @@ function resolveMismatch(firstIndex, secondIndex) {
   [firstIndex, secondIndex].forEach((index) => {
     const button = cardGrid.querySelector(`[data-index="${index}"]`);
     if (!button) return;
-    button.classList.remove('is-flipped', 'is-wrong');
+    button.classList.remove('is-wrong');
+    button.classList.remove('is-flipped');
     button.setAttribute('aria-label', `Hidden card ${index + 1}`);
     button.setAttribute('aria-pressed', 'false');
   });
-  resetTransientTurn();
+
   setGameMessage('Try again.');
+  scheduleGameplayTask(
+    () => finishMismatch(firstIndex, secondIndex),
+    settings.reducedMotion ? 10 : MISMATCH_FLIP_BACK_MS
+  );
+}
+
+function finishMismatch(firstIndex, secondIndex) {
+  if (!isCurrentResolvingPair(firstIndex, secondIndex)) return;
+  resetTransientTurn();
   saveGame();
   focusNextCard(secondIndex);
 }
@@ -813,6 +868,7 @@ window.setInterval(() => {
 
 window.addEventListener('beforeunload', saveGame);
 
+installCardFlipPolish();
 applySettings();
 updateContinueButton();
 
