@@ -11,6 +11,10 @@ let preferredFocusIndex = 0;
 let pauseReturnTarget = null;
 let pairBusy = false;
 
+function setAttrIfChanged(element, name, value) {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
 function cards() {
   return [...cardGrid.querySelectorAll('.memory-card')];
 }
@@ -32,9 +36,9 @@ function setRovingFocus(preferredIndex = preferredFocusIndex) {
     available[0];
 
   preferredFocusIndex = cardIndex(preferred);
-  available.forEach((card) => card.setAttribute('tabindex', card === preferred ? '0' : '-1'));
+  available.forEach((card) => setAttrIfChanged(card, 'tabindex', card === preferred ? '0' : '-1'));
   cards().filter((card) => card.disabled || card.classList.contains('is-matched'))
-    .forEach((card) => card.setAttribute('tabindex', '-1'));
+    .forEach((card) => setAttrIfChanged(card, 'tabindex', '-1'));
 }
 
 function normalizeCardAccessibility() {
@@ -45,26 +49,26 @@ function normalizeCardAccessibility() {
     const matched = card.classList.contains('is-matched') || card.disabled;
     const revealed = card.classList.contains('is-flipped') && !matched;
 
-    card.setAttribute('aria-disabled', matched ? 'true' : 'false');
+    setAttrIfChanged(card, 'aria-disabled', matched ? 'true' : 'false');
 
     if (previewing) {
       // Do not expose memorized face identities to assistive technology during
       // the visual-only study phase.
-      card.setAttribute('aria-label', `Memory card ${index + 1}`);
-      card.setAttribute('aria-pressed', 'false');
-      card.setAttribute('tabindex', '-1');
+      setAttrIfChanged(card, 'aria-label', `Memory card ${index + 1}`);
+      setAttrIfChanged(card, 'aria-pressed', 'false');
+      setAttrIfChanged(card, 'tabindex', '-1');
       return;
     }
 
     if (matched) {
-      card.setAttribute('aria-pressed', 'true');
-      card.setAttribute('tabindex', '-1');
+      setAttrIfChanged(card, 'aria-pressed', 'true');
+      setAttrIfChanged(card, 'tabindex', '-1');
       return;
     }
 
     if (!revealed) {
-      card.setAttribute('aria-label', `Hidden card ${index + 1}`);
-      card.setAttribute('aria-pressed', 'false');
+      setAttrIfChanged(card, 'aria-label', `Hidden card ${index + 1}`);
+      setAttrIfChanged(card, 'aria-pressed', 'false');
     }
   });
 
@@ -73,7 +77,7 @@ function normalizeCardAccessibility() {
 
 function updatePairBusyState() {
   if (cardGrid.classList.contains('is-previewing')) {
-    cardGrid.setAttribute('aria-busy', 'true');
+    setAttrIfChanged(cardGrid, 'aria-busy', 'true');
     return;
   }
 
@@ -84,10 +88,8 @@ function updatePairBusyState() {
   );
   const shouldBeBusy = revealedUnmatched.length >= 2;
 
-  if (shouldBeBusy !== pairBusy) {
-    pairBusy = shouldBeBusy;
-    cardGrid.setAttribute('aria-busy', shouldBeBusy ? 'true' : 'false');
-  }
+  if (shouldBeBusy !== pairBusy) pairBusy = shouldBeBusy;
+  setAttrIfChanged(cardGrid, 'aria-busy', shouldBeBusy ? 'true' : 'false');
 }
 
 function refreshAccessibility() {
@@ -95,8 +97,8 @@ function refreshAccessibility() {
   updatePairBusyState();
 }
 
-cardGrid.setAttribute('aria-describedby', 'game-message');
-gameMessage.setAttribute('aria-atomic', 'true');
+setAttrIfChanged(cardGrid, 'aria-describedby', 'game-message');
+setAttrIfChanged(gameMessage, 'aria-atomic', 'true');
 
 cardGrid.addEventListener('focusin', (event) => {
   const card = event.target.closest?.('.memory-card');
