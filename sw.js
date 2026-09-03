@@ -1,4 +1,4 @@
-const CACHE_NAME = 'deja-vu-v1.0.14';
+const CACHE_NAME = 'deja-vu-v1.0.15';
 const APP_SHELL = [
   './',
   './index.html',
@@ -6,10 +6,12 @@ const APP_SHELL = [
   './matched-card-polish.css',
   './responsive-board.css',
   './gameplay-preview.css',
+  './results-ux.css',
   './index.js',
   './gameplay-preview.js',
   './input-guard.js',
   './accessibility.js',
+  './results-ux.js',
   './balance-config.js',
   './preview-timer-gate.js',
   './sprite-atlas.js',
