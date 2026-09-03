@@ -1,6 +1,6 @@
 // Initial DEJA VU memorization phase.
-// A fresh board is revealed briefly, then every unmatched card flips face-down
-// before normal tap-to-match gameplay begins. Resumed games skip this phase.
+// A fresh board is revealed immediately, then every unmatched card flips face-down
+// together before normal tap-to-match gameplay begins. Resumed games skip this phase.
 
 const cardGrid = document.querySelector('#card-grid');
 const gameMessage = document.querySelector('#game-message');
@@ -46,6 +46,7 @@ function revealBoardForPreview() {
 
   cardGrid.dataset.previewComplete = 'false';
   setPreviewInteractionLocked(true);
+  cardGrid.classList.add('is-preview-revealing');
 
   cards.forEach((card) => {
     if (card.classList.contains('is-matched')) return;
@@ -57,6 +58,10 @@ function revealBoardForPreview() {
   gameMessage.textContent = `Memorize the board — ${Math.ceil(duration / 1000)} seconds.`;
   gameMessage.classList.remove('is-error');
   gameMessage.classList.add('is-preview-message');
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => cardGrid.classList.remove('is-preview-revealing'));
+  });
 
   previewTimer = window.setTimeout(() => {
     if (token !== previewToken) return;
@@ -98,6 +103,7 @@ playAgainButton?.addEventListener('click', markFreshBoardPending, true);
 continueButton?.addEventListener('click', () => {
   clearPreviewTimers();
   pendingFreshBoard = false;
+  cardGrid.classList.remove('is-preview-revealing');
   cardGrid.dataset.previewComplete = 'true';
 }, true);
 
@@ -128,7 +134,9 @@ const observer = new MutationObserver(() => {
   const cards = cardGrid.querySelectorAll('.memory-card');
   if (!cards.length) return;
   pendingFreshBoard = false;
-  requestAnimationFrame(revealBoardForPreview);
+  // MutationObserver callbacks run before paint, so the first visible frame of
+  // a new game is already the face-up memorization board.
+  revealBoardForPreview();
 });
 
 observer.observe(cardGrid, { childList: true });
