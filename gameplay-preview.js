@@ -8,24 +8,29 @@ const difficultyDialog = document.querySelector('#difficulty-dialog');
 const playAgainButton = document.querySelector('#btn-play-again');
 const continueButton = document.querySelector('#btn-continue');
 
-const PREVIEW_MS = Object.freeze({
-  12: 3200,
-  16: 4000,
-  20: 4800,
-  30: 6200,
+// Prompt 11: one authoritative configuration for the required study phase.
+const PREVIEW_CONFIG = Object.freeze({
+  easy: Object.freeze({ durationMs: 4000, rows: 3, cols: 4 }),
+  intermediate: Object.freeze({ durationMs: 5000, rows: 4, cols: 4 }),
+  advanced: Object.freeze({ durationMs: 6000, rows: 4, cols: 5 }),
+  insane: Object.freeze({ durationMs: 8000, rows: 6, cols: 5 }),
 });
 
 const FLIP_SETTLE_MS = 480;
 let pendingFreshBoard = false;
+let pendingDifficulty = '';
 let previewToken = 0;
 let previewTimer = 0;
 let settleTimer = 0;
+let countdownTimer = 0;
 
 function clearPreviewTimers() {
   window.clearTimeout(previewTimer);
   window.clearTimeout(settleTimer);
+  window.clearInterval(countdownTimer);
   previewTimer = 0;
   settleTimer = 0;
+  countdownTimer = 0;
   previewToken += 1;
   window.DEJA_VU_PREVIEW_ACTIVE = false;
 }
@@ -36,15 +41,34 @@ function setPreviewInteractionLocked(locked) {
   window.DEJA_VU_PREVIEW_ACTIVE = locked;
 }
 
+function difficultyFromBoard() {
+  const rows = Number(cardGrid.getAttribute('aria-rowcount'));
+  const cols = Number(cardGrid.getAttribute('aria-colcount'));
+  return Object.entries(PREVIEW_CONFIG).find(([, config]) => config.rows === rows && config.cols === cols)?.[0] || 'easy';
+}
+
+function setMemorizeMessage(secondsRemaining) {
+  const seconds = Math.max(1, Math.ceil(secondsRemaining));
+  gameMessage.textContent = `Memorize the board — ${seconds}`;
+  gameMessage.classList.remove('is-error', 'is-success');
+  gameMessage.classList.add('is-preview-message');
+}
+
 function revealBoardForPreview() {
   const cards = [...cardGrid.querySelectorAll('.memory-card')];
   if (!cards.length) return;
 
   clearPreviewTimers();
   const token = previewToken;
-  const duration = PREVIEW_MS[cards.length] || 4200;
+  const difficultyKey = pendingDifficulty && PREVIEW_CONFIG[pendingDifficulty]
+    ? pendingDifficulty
+    : difficultyFromBoard();
+  const config = PREVIEW_CONFIG[difficultyKey];
+  const duration = config.durationMs;
+  pendingDifficulty = '';
 
   cardGrid.dataset.previewComplete = 'false';
+  cardGrid.dataset.previewDifficulty = difficultyKey;
   setPreviewInteractionLocked(true);
   cardGrid.classList.add('is-preview-revealing');
 
@@ -55,9 +79,19 @@ function revealBoardForPreview() {
     card.setAttribute('tabindex', '-1');
   });
 
-  gameMessage.textContent = `Memorize the board — ${Math.ceil(duration / 1000)} seconds.`;
-  gameMessage.classList.remove('is-error');
-  gameMessage.classList.add('is-preview-message');
+  const previewStartedAt = performance.now();
+  setMemorizeMessage(duration / 1000);
+
+  countdownTimer = window.setInterval(() => {
+    if (token !== previewToken) return;
+    const remainingMs = Math.max(0, duration - (performance.now() - previewStartedAt));
+    if (remainingMs <= 0) {
+      window.clearInterval(countdownTimer);
+      countdownTimer = 0;
+      return;
+    }
+    setMemorizeMessage(remainingMs / 1000);
+  }, 250);
 
   requestAnimationFrame(() => {
     requestAnimationFrame(() => cardGrid.classList.remove('is-preview-revealing'));
@@ -65,6 +99,8 @@ function revealBoardForPreview() {
 
   previewTimer = window.setTimeout(() => {
     if (token !== previewToken) return;
+    window.clearInterval(countdownTimer);
+    countdownTimer = 0;
 
     cards.forEach((card) => {
       if (card.classList.contains('is-matched')) return;
@@ -86,23 +122,26 @@ function revealBoardForPreview() {
   }, duration);
 }
 
-function markFreshBoardPending() {
+function markFreshBoardPending(difficultyKey = '') {
   clearPreviewTimers();
   pendingFreshBoard = true;
+  pendingDifficulty = PREVIEW_CONFIG[difficultyKey] ? difficultyKey : '';
   cardGrid.dataset.previewComplete = 'false';
 }
 
 // Capture these before index.js bubble handlers create/render the next board.
 difficultyDialog?.addEventListener('click', (event) => {
-  if (event.target.closest('[data-difficulty]')) markFreshBoardPending();
+  const button = event.target.closest('[data-difficulty]');
+  if (button) markFreshBoardPending(button.dataset.difficulty);
 }, true);
 
-playAgainButton?.addEventListener('click', markFreshBoardPending, true);
+playAgainButton?.addEventListener('click', () => markFreshBoardPending(difficultyFromBoard()), true);
 
 // Continue resumes an existing board and should never replay the memorization phase.
 continueButton?.addEventListener('click', () => {
   clearPreviewTimers();
   pendingFreshBoard = false;
+  pendingDifficulty = '';
   cardGrid.classList.remove('is-preview-revealing');
   cardGrid.dataset.previewComplete = 'true';
 }, true);
