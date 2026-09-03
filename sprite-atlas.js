@@ -1,40 +1,64 @@
-// DEJA VU sprite atlas contract.
-// The source sheet is a 5-column x 4-row atlas. Gameplay cards are painted
-// from exact source-pixel rectangles into canvases so neighboring sprites can
-// never bleed into one another through CSS percentage/sub-pixel rounding.
+// DEJA VU measured sprite-sheet contract.
+//
+// IMPORTANT: card-flip-sprite-sheet.png is 1233 x 1275 px, but it is NOT a
+// uniform 5 x 4 atlas. The upright cards have different row heights/gutters and
+// the bottom-row flip frames extend much farther downward than an equal grid
+// would predict. Dividing the sheet into equal cells cuts sprites and pulls in
+// neighboring frames. Gameplay therefore renders only the measured source
+// rectangle for each usable upright card/back.
+
+const rect = (x, y, w, h) => Object.freeze({ x, y, w, h });
 
 export const SPRITE_ATLAS = Object.freeze({
   image: './card-flip-sprite-sheet.png',
+  sourceWidth: 1233,
+  sourceHeight: 1275,
   columns: 5,
   rows: 4,
-  back: Object.freeze({ col: 2, row: 3 }),
+  sourcePadding: 4,
+  renderWidth: 600,
+  renderHeight: 775,
+  renderInset: 8,
+  back: Object.freeze({
+    col: 2,
+    row: 3,
+    name: 'card back',
+    // Measured non-transparent bounds: x 508..726, y 885..1178.
+    rect: rect(508, 885, 218, 293),
+  }),
   playableFaces: Object.freeze([
-    Object.freeze({ col: 0, row: 0, name: 'red circle' }),
-    Object.freeze({ col: 1, row: 0, name: 'blue square' }),
-    Object.freeze({ col: 2, row: 0, name: 'green triangle' }),
-    Object.freeze({ col: 3, row: 0, name: 'purple rectangle' }),
-    Object.freeze({ col: 4, row: 0, name: 'orange oval' }),
-    Object.freeze({ col: 0, row: 1, name: 'cyan diamond' }),
-    Object.freeze({ col: 1, row: 1, name: 'pink pentagon' }),
-    Object.freeze({ col: 2, row: 1, name: 'yellow hexagon' }),
-    Object.freeze({ col: 3, row: 1, name: 'teal octagon' }),
-    Object.freeze({ col: 4, row: 1, name: 'gold star' }),
-    Object.freeze({ col: 0, row: 2, name: 'purple crescent' }),
-    Object.freeze({ col: 1, row: 2, name: 'red semicircle' }),
-    Object.freeze({ col: 2, row: 2, name: 'orange trapezoid' }),
-    Object.freeze({ col: 3, row: 2, name: 'green parallelogram' }),
-    Object.freeze({ col: 4, row: 2, name: 'blue kite' }),
-    Object.freeze({ col: 0, row: 3, name: 'pink cross' }),
-    Object.freeze({ col: 1, row: 3, name: 'purple spiral' }),
+    Object.freeze({ col: 0, row: 0, name: 'red circle', rect: rect(18, 14, 222, 278) }),
+    Object.freeze({ col: 1, row: 0, name: 'blue square', rect: rect(261, 14, 221, 276) }),
+    Object.freeze({ col: 2, row: 0, name: 'green triangle', rect: rect(508, 14, 218, 277) }),
+    Object.freeze({ col: 3, row: 0, name: 'purple rectangle', rect: rect(752, 14, 223, 276) }),
+    Object.freeze({ col: 4, row: 0, name: 'orange oval', rect: rect(992, 14, 225, 276) }),
+
+    Object.freeze({ col: 0, row: 1, name: 'cyan diamond', rect: rect(17, 309, 224, 269) }),
+    Object.freeze({ col: 1, row: 1, name: 'pink pentagon', rect: rect(259, 309, 223, 264) }),
+    Object.freeze({ col: 2, row: 1, name: 'yellow hexagon', rect: rect(507, 306, 219, 271) }),
+    Object.freeze({ col: 3, row: 1, name: 'teal octagon', rect: rect(752, 306, 223, 271) }),
+    Object.freeze({ col: 4, row: 1, name: 'gold star', rect: rect(995, 309, 222, 268) }),
+
+    Object.freeze({ col: 0, row: 2, name: 'purple crescent', rect: rect(17, 590, 223, 272) }),
+    Object.freeze({ col: 1, row: 2, name: 'red semicircle', rect: rect(262, 590, 219, 281) }),
+    Object.freeze({ col: 2, row: 2, name: 'orange trapezoid', rect: rect(507, 590, 219, 272) }),
+    Object.freeze({ col: 3, row: 2, name: 'green parallelogram', rect: rect(752, 590, 225, 272) }),
+    Object.freeze({ col: 4, row: 2, name: 'blue kite', rect: rect(995, 590, 224, 272) }),
+
+    Object.freeze({ col: 0, row: 3, name: 'pink cross', rect: rect(18, 885, 222, 294) }),
+    Object.freeze({ col: 1, row: 3, name: 'purple spiral', rect: rect(260, 885, 219, 292) }),
   ]),
 });
 
-const faceKeys = new Set(SPRITE_ATLAS.playableFaces.map(({ col, row }) => `${col}:${row}`));
+const faceByKey = new Map(
+  SPRITE_ATLAS.playableFaces.map((sprite) => [`${sprite.col}:${sprite.row}`, sprite])
+);
+
 const atlasImage = new Image();
 atlasImage.decoding = 'async';
 atlasImage.src = SPRITE_ATLAS.image;
 let atlasReady = atlasImage.complete && atlasImage.naturalWidth > 0;
-const pendingSides = new Set();
+const pendingSides = new Map();
 
 function percentForCell(index, count) {
   return count <= 1 ? 0 : (index / (count - 1)) * 100;
@@ -46,16 +70,32 @@ function closestCell(value, count) {
   return Math.max(0, Math.min(count - 1, Math.round((numeric / 100) * (count - 1))));
 }
 
-function sourceRect(col, row) {
-  const x0 = Math.round((col * atlasImage.naturalWidth) / SPRITE_ATLAS.columns);
-  const x1 = Math.round(((col + 1) * atlasImage.naturalWidth) / SPRITE_ATLAS.columns);
-  const y0 = Math.round((row * atlasImage.naturalHeight) / SPRITE_ATLAS.rows);
-  const y1 = Math.round(((row + 1) * atlasImage.naturalHeight) / SPRITE_ATLAS.rows);
-  return { sx: x0, sy: y0, sw: Math.max(1, x1 - x0), sh: Math.max(1, y1 - y0) };
+function scaledSourceRect(sprite) {
+  const padding = SPRITE_ATLAS.sourcePadding;
+  const scaleX = atlasImage.naturalWidth / SPRITE_ATLAS.sourceWidth;
+  const scaleY = atlasImage.naturalHeight / SPRITE_ATLAS.sourceHeight;
+  const source = sprite.rect;
+
+  const left = Math.max(0, source.x - padding);
+  const top = Math.max(0, source.y - padding);
+  const right = Math.min(SPRITE_ATLAS.sourceWidth, source.x + source.w + padding);
+  const bottom = Math.min(SPRITE_ATLAS.sourceHeight, source.y + source.h + padding);
+
+  const sx = Math.floor(left * scaleX);
+  const sy = Math.floor(top * scaleY);
+  const ex = Math.ceil(right * scaleX);
+  const ey = Math.ceil(bottom * scaleY);
+
+  return {
+    sx,
+    sy,
+    sw: Math.max(1, ex - sx),
+    sh: Math.max(1, ey - sy),
+  };
 }
 
 function canvasForSide(side) {
-  let canvas = side.querySelector(':scope > .sprite-cell-canvas');
+  let canvas = side.querySelector('.sprite-cell-canvas');
   if (!canvas) {
     canvas = document.createElement('canvas');
     canvas.className = 'sprite-cell-canvas';
@@ -65,29 +105,54 @@ function canvasForSide(side) {
   return canvas;
 }
 
-function paintSide(side, col, row) {
-  if (!side) return;
-  side.dataset.spriteCol = String(col);
-  side.dataset.spriteRow = String(row);
+function paintSide(side, sprite) {
+  if (!side || !sprite?.rect) return;
+
+  side.dataset.spriteCol = String(sprite.col);
+  side.dataset.spriteRow = String(sprite.row);
+  side.dataset.spriteName = sprite.name;
   side.style.backgroundImage = 'none';
   side.style.backgroundPosition = '';
 
   if (!atlasReady) {
-    pendingSides.add(side);
+    pendingSides.set(side, sprite);
     return;
   }
 
-  const { sx, sy, sw, sh } = sourceRect(col, row);
+  const { sx, sy, sw, sh } = scaledSourceRect(sprite);
   const canvas = canvasForSide(side);
-  if (canvas.width !== sw) canvas.width = sw;
-  if (canvas.height !== sh) canvas.height = sh;
+  const outputWidth = SPRITE_ATLAS.renderWidth;
+  const outputHeight = SPRITE_ATLAS.renderHeight;
+
+  if (canvas.width !== outputWidth) canvas.width = outputWidth;
+  if (canvas.height !== outputHeight) canvas.height = outputHeight;
+
   const context = canvas.getContext('2d', { alpha: true });
   if (!context) return;
-  context.clearRect(0, 0, sw, sh);
+
+  context.clearRect(0, 0, outputWidth, outputHeight);
   context.imageSmoothingEnabled = true;
   if ('imageSmoothingQuality' in context) context.imageSmoothingQuality = 'high';
-  context.drawImage(atlasImage, sx, sy, sw, sh, 0, 0, sw, sh);
-  side.dataset.spritePainted = `${col}:${row}`;
+
+  // Contain the COMPLETE measured card rectangle in one fixed card-aspect
+  // bitmap. This preserves the source sprite's proportions, keeps its outer
+  // shadow/border visible, and never samples the neighboring flip frames.
+  const inset = SPRITE_ATLAS.renderInset;
+  const availableWidth = outputWidth - inset * 2;
+  const availableHeight = outputHeight - inset * 2;
+  const scale = Math.min(availableWidth / sw, availableHeight / sh);
+  const drawWidth = Math.max(1, Math.round(sw * scale));
+  const drawHeight = Math.max(1, Math.round(sh * scale));
+  const dx = Math.round((outputWidth - drawWidth) / 2);
+  const dy = Math.round((outputHeight - drawHeight) / 2);
+
+  context.drawImage(
+    atlasImage,
+    sx, sy, sw, sh,
+    dx, dy, drawWidth, drawHeight
+  );
+
+  side.dataset.spritePainted = `${sprite.col}:${sprite.row}`;
   pendingSides.delete(side);
 }
 
@@ -98,46 +163,66 @@ function normalizeFront(front) {
   if (!Number.isInteger(col)) col = closestCell(front.style.getPropertyValue('--sprite-x'), SPRITE_ATLAS.columns);
   if (!Number.isInteger(row)) row = closestCell(front.style.getPropertyValue('--sprite-y'), SPRITE_ATLAS.rows);
 
-  if (col === null || row === null || !faceKeys.has(`${col}:${row}`)) {
-    console.warn('[DEJA VU] Invalid card sprite cell; falling back to first playable face.', { col, row });
-    col = 0;
-    row = 0;
+  let sprite = faceByKey.get(`${col}:${row}`);
+  if (!sprite) {
+    console.warn('[DEJA VU] Invalid card face cell; falling back to first playable face.', { col, row });
+    sprite = SPRITE_ATLAS.playableFaces[0];
   }
 
-  // Preserve compatibility variables for debugging/legacy helpers, but actual
-  // gameplay rendering comes from the exact source-pixel canvas crop above.
-  front.style.setProperty('--sprite-x', `${percentForCell(col, SPRITE_ATLAS.columns)}%`);
-  front.style.setProperty('--sprite-y', `${percentForCell(row, SPRITE_ATLAS.rows)}%`);
-  paintSide(front, col, row);
+  // Preserve compatibility variables for the existing render/debug path. They
+  // no longer control the actual crop; measured rectangles above do.
+  front.style.setProperty('--sprite-x', `${percentForCell(sprite.col, SPRITE_ATLAS.columns)}%`);
+  front.style.setProperty('--sprite-y', `${percentForCell(sprite.row, SPRITE_ATLAS.rows)}%`);
+  paintSide(front, sprite);
 }
 
 function normalizeCard(card) {
   const front = card.querySelector('.card-side-front');
   const back = card.querySelector('.card-side-back');
   if (front) normalizeFront(front);
-  if (back) paintSide(back, SPRITE_ATLAS.back.col, SPRITE_ATLAS.back.row);
+  if (back) paintSide(back, SPRITE_ATLAS.back);
 }
 
 function validateCards(root = document) {
   root.querySelectorAll?.('.memory-card').forEach(normalizeCard);
 }
 
+function paintStaticDemo() {
+  const demoBack = document.querySelector('.sprite-demo .sprite-back');
+  const demoFace = document.querySelector('.sprite-demo .sprite-symbol');
+  if (demoBack) paintSide(demoBack, SPRITE_ATLAS.back);
+  if (demoFace) paintSide(demoFace, SPRITE_ATLAS.playableFaces[8]);
+}
+
 function flushPendingSides() {
-  [...pendingSides].forEach((side) => {
+  [...pendingSides.entries()].forEach(([side, sprite]) => {
     if (!side.isConnected) {
       pendingSides.delete(side);
       return;
     }
-    const col = Number.parseInt(side.dataset.spriteCol, 10);
-    const row = Number.parseInt(side.dataset.spriteRow, 10);
-    if (Number.isInteger(col) && Number.isInteger(row)) paintSide(side, col, row);
+    paintSide(side, sprite);
   });
+}
+
+function validateSourceSheet() {
+  if (!atlasReady) return;
+  if (
+    atlasImage.naturalWidth !== SPRITE_ATLAS.sourceWidth ||
+    atlasImage.naturalHeight !== SPRITE_ATLAS.sourceHeight
+  ) {
+    console.warn(
+      `[DEJA VU] Sprite sheet dimensions changed from ${SPRITE_ATLAS.sourceWidth}x${SPRITE_ATLAS.sourceHeight} ` +
+      `to ${atlasImage.naturalWidth}x${atlasImage.naturalHeight}. Measured rectangles will be scaled proportionally.`
+    );
+  }
 }
 
 atlasImage.addEventListener('load', () => {
   atlasReady = atlasImage.naturalWidth > 0;
+  validateSourceSheet();
   flushPendingSides();
   validateCards();
+  paintStaticDemo();
 }, { once: true });
 
 atlasImage.addEventListener('error', () => {
@@ -148,17 +233,9 @@ function installAtlasStyles() {
   if (document.querySelector('#deja-vu-sprite-atlas-contract')) return;
   const style = document.createElement('style');
   style.id = 'deja-vu-sprite-atlas-contract';
-  const backX = percentForCell(SPRITE_ATLAS.back.col, SPRITE_ATLAS.columns);
-  const backY = percentForCell(SPRITE_ATLAS.back.row, SPRITE_ATLAS.rows);
   style.textContent = `
-    :root {
-      --sprite-atlas-columns: ${SPRITE_ATLAS.columns};
-      --sprite-atlas-rows: ${SPRITE_ATLAS.rows};
-      --sprite-back-x: ${backX}%;
-      --sprite-back-y: ${backY}%;
-    }
-
-    .memory-card .card-side {
+    .memory-card .card-side,
+    .sprite-demo .sprite-card {
       overflow: hidden;
       background-image: none !important;
       background-color: transparent;
@@ -175,25 +252,17 @@ function installAtlasStyles() {
       pointer-events: none;
     }
 
-    /* Static help/demo sprites can continue using the atlas as CSS because
-       they never animate or scale through the gameplay card compositor. */
-    .sprite-card,
-    .menu-pattern span {
-      background-image: url('${SPRITE_ATLAS.image}');
-      background-size: ${SPRITE_ATLAS.columns * 100}% ${SPRITE_ATLAS.rows * 100}%;
-      background-repeat: no-repeat;
-    }
-
-    .sprite-back,
-    .menu-pattern span {
-      background-position: var(--sprite-back-x) var(--sprite-back-y);
+    .sprite-demo .sprite-card {
+      position: relative;
     }
   `;
   document.head.append(style);
 }
 
 installAtlasStyles();
+validateSourceSheet();
 validateCards();
+paintStaticDemo();
 
 const grid = document.querySelector('#card-grid');
 if (grid) {
