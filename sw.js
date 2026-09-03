@@ -2,28 +2,26 @@
 // Version this cache whenever the app shell changes. Activation removes older
 // DEJA VU caches, while navigation uses network-first so GitHub Pages updates
 // are picked up promptly without sacrificing the cached offline app.
-const CACHE_NAME = 'deja-vu-v1.0.16';
+const CACHE_NAME = 'deja-vu-v1.0.17';
 const CACHE_PREFIX = 'deja-vu-';
 
 const APP_SHELL = [
   './',
   './index.html',
   './styles.css',
-  './matched-card-polish.css',
   './responsive-board.css',
+  './matched-card-polish.css',
   './gameplay-preview.css',
   './results-ux.css',
+  './runtime-config.js',
   './index.js',
   './gameplay-preview.js',
   './input-guard.js',
   './accessibility.js',
   './results-ux.js',
-  './balance-config.js',
-  './preview-timer-gate.js',
   './sprite-atlas.js',
   './save-integrity.js',
   './stats-integrity.js',
-  './stats-semantics.js',
   './manifest.webmanifest',
   './card-flip-sprite-sheet.png',
   './logo.png',
@@ -61,7 +59,6 @@ async function staleWhileRevalidate(request) {
     .catch(() => null);
 
   if (cached) {
-    // Keep the cache fresh for the next launch without delaying this response.
     network.catch(() => null);
     return cached;
   }
