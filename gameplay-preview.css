@@ -1,0 +1,49 @@
+/* Initial memorize phase + tap feedback. */
+
+.card-grid.is-previewing .memory-card {
+  pointer-events: none;
+  cursor: default;
+}
+
+.card-grid.is-previewing .memory-card-inner {
+  filter: none !important;
+}
+
+.memory-card.is-preview-card .card-side-front {
+  filter:
+    saturate(1.06)
+    brightness(1.03)
+    drop-shadow(0 5px 5px rgba(0, 0, 0, 0.32));
+}
+
+.game-message.is-preview-message {
+  color: var(--accent);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.memory-card:not(:disabled):not(.is-matched) {
+  cursor: pointer;
+}
+
+.memory-card:not(:disabled):not(.is-matched):active .memory-card-inner {
+  transform: scale(0.975);
+}
+
+.memory-card.is-flipped:not(.is-matched):active .memory-card-inner {
+  transform: rotateY(180deg) scale(0.975);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .card-grid:not(.is-previewing) .memory-card:not(:disabled):not(.is-matched):hover {
+    transform: translateY(-1px);
+  }
+}
+
+html.reduced-motion .memory-card:not(:disabled):active .memory-card-inner {
+  transform: none;
+}
+
+html.reduced-motion .memory-card.is-flipped:not(.is-matched):active .memory-card-inner {
+  transform: rotateY(180deg);
+}
