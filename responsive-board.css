@@ -1,30 +1,41 @@
-/* Prompt 8: responsive gameplay board sizing.
-   Uses the grid's existing aria-rowcount/aria-colcount values so dense boards
-   can scale for both viewport width and viewport height without JS coupling. */
+/* Responsive gameplay board sizing.
+   Avoid custom-property multiplication in calc(): some mobile browsers discard
+   those width expressions. The board is fluid first, then capped explicitly by
+   column count so every card remains inside the viewport on mobile and desktop. */
 
 .card-grid {
   --responsive-gap: clamp(0.2rem, 1vw, 0.46rem);
-  --responsive-card-max: 5.6rem;
-  --responsive-board-width: calc(
-    var(--cols) * var(--responsive-card-max) +
-    (var(--cols) - 1) * var(--responsive-gap)
-  );
-  width: min(calc(100vw - 1rem - var(--safe-left) - var(--safe-right)), var(--responsive-board-width));
+  width: 100%;
+  max-width: 24rem;
   gap: var(--responsive-gap);
   align-items: start;
+  justify-content: center;
 }
 
-/* Five-column boards need slightly tighter cards on phones. */
+.card-grid[aria-colcount="3"] {
+  max-width: 18rem;
+}
+
+.card-grid[aria-colcount="4"] {
+  max-width: 24rem;
+}
+
 .card-grid[aria-colcount="5"] {
   --responsive-gap: clamp(0.14rem, 0.8vw, 0.38rem);
-  --responsive-card-max: 5rem;
+  max-width: 26rem;
 }
 
-/* Insane is 6 rows x 5 columns. Height becomes the limiting dimension on
-   most phones, so cap the whole board more aggressively before scrolling. */
+/* Keep dense six-row boards compact. The game screen itself remains vertically
+   scrollable, so no card can be clipped by browser chrome on short displays. */
 .card-grid[aria-rowcount="6"] {
-  --responsive-card-max: min(4.65rem, 9.2dvh);
+  max-width: min(100%, 24rem);
   --responsive-gap: clamp(0.12rem, 0.55dvh, 0.3rem);
+}
+
+.memory-card {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 @media (max-width: 430px) {
@@ -66,11 +77,12 @@
   }
 
   .card-grid {
-    width: min(calc(100vw - 0.55rem - var(--safe-left) - var(--safe-right)), var(--responsive-board-width));
+    width: 100%;
+    max-width: 100%;
   }
 
   .card-grid[aria-colcount="5"] {
-    --responsive-card-max: 4.55rem;
+    --responsive-gap: clamp(0.1rem, 0.65vw, 0.28rem);
   }
 
   .pairs-label {
@@ -85,7 +97,6 @@
 
   .card-grid[aria-colcount="5"] {
     --responsive-gap: 0.1rem;
-    --responsive-card-max: 4.15rem;
   }
 
   .game-stats span {
@@ -128,7 +139,7 @@
   }
 
   .card-grid[aria-rowcount="6"] {
-    --responsive-card-max: min(4.25rem, 8.25dvh);
+    max-width: min(100%, 21rem);
     --responsive-gap: clamp(0.08rem, 0.4dvh, 0.22rem);
   }
 }
@@ -153,12 +164,10 @@
   }
 
   .card-grid[aria-rowcount="6"] {
-    --responsive-card-max: min(3.75rem, 7.45dvh);
+    max-width: min(100%, 18.5rem);
   }
 }
 
-/* Landscape phones: height is scarce, so keep the board compact and let the
-   game screen scroll naturally if browser chrome consumes extra space. */
 @media (orientation: landscape) and (max-height: 520px) {
   .game-screen {
     padding-top: calc(0.3rem + var(--safe-top));
@@ -171,14 +180,14 @@
   }
 
   .card-grid {
-    --responsive-card-max: 3.85rem;
+    max-width: 21rem;
   }
 
   .card-grid[aria-colcount="5"] {
-    --responsive-card-max: 3.55rem;
+    max-width: 19rem;
   }
 
   .card-grid[aria-rowcount="6"] {
-    --responsive-card-max: min(3.35rem, 12.5dvh);
+    max-width: 17.5rem;
   }
 }
