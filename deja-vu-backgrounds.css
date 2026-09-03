@@ -54,10 +54,7 @@
   background: radial-gradient(ellipse at center, transparent 18%, rgba(7, 2, 16, 0.28) 72%, rgba(5, 1, 12, 0.58));
 }
 
-/* Retire the older card-back menu wallpaper in favor of the shape field. */
-.menu-pattern {
-  display: none !important;
-}
+.menu-pattern { display: none !important; }
 
 .deja-shape-field {
   position: absolute;
@@ -82,19 +79,18 @@
   height: var(--shape-size);
   opacity: var(--shape-opacity);
   color: var(--shape-color);
-  transform: rotate(var(--shape-rotate));
   filter: drop-shadow(0 0 10px color-mix(in srgb, currentColor 28%, transparent));
   animation: deja-shape-drift var(--shape-duration) linear var(--shape-delay) infinite;
   will-change: transform;
 }
 
-/* Geometric silhouettes echo the actual card-face vocabulary without adding
-   image downloads or competing with the playable card sprites. */
+/* Geometric silhouettes echo the card-face vocabulary without adding another
+   image asset or competing with the playable card sprites. */
 .deja-shape.circle { border-radius: 50%; background: currentColor; }
 .deja-shape.square { border-radius: 14%; background: currentColor; }
-.deja-shape.oval { width: calc(var(--shape-size) * 1.28); border-radius: 50%; background: currentColor; }
-.deja-shape.diamond { border-radius: 12%; background: currentColor; transform: rotate(45deg); }
-.deja-shape.triangle { width: 0; height: 0; border-left: calc(var(--shape-size) * .52) solid transparent; border-right: calc(var(--shape-size) * .52) solid transparent; border-bottom: var(--shape-size) solid currentColor; }
+.deja-shape.oval { background: currentColor; clip-path: ellipse(48% 32% at 50% 50%); }
+.deja-shape.diamond { background: currentColor; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.deja-shape.triangle { background: currentColor; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .deja-shape.pentagon { background: currentColor; clip-path: polygon(50% 0%, 98% 36%, 80% 100%, 20% 100%, 2% 36%); }
 .deja-shape.hexagon { background: currentColor; clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0 50%); }
 .deja-shape.star { background: currentColor; clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 94%, 50% 72%, 21% 94%, 32% 57%, 2% 35%, 39% 35%); }
@@ -115,17 +111,12 @@
 .deja-shape:nth-child(11) { --shape-x: 27%; --shape-size: 1.55rem; --shape-color: var(--deja-yellow); --shape-duration: 19s; --shape-delay: -11s; --shape-opacity: .08; }
 .deja-shape:nth-child(12) { --shape-x: 86%; --shape-size: 1.8rem; --shape-color: var(--deja-violet); --shape-duration: 22s; --shape-delay: -8s; --shape-opacity: .1; }
 
-/* Gameplay uses the exact same signature field, but quieter and slower. */
-.game-screen .deja-shape-field {
-  opacity: 0.46;
-}
-
+.game-screen .deja-shape-field { opacity: 0.46; }
 .game-screen .deja-shape-field .deja-shape {
   --shape-opacity: 0.075;
   filter: blur(.15px) drop-shadow(0 0 8px color-mix(in srgb, currentColor 18%, transparent));
 }
 
-/* Give HUD elements a glassy purple surface that belongs to the new palette. */
 .game-screen .game-header,
 .game-screen .game-stats,
 .game-screen .game-message,
@@ -152,9 +143,7 @@
   border: 1px solid rgba(192, 150, 255, 0.12);
 }
 
-.game-screen .progress-track span {
-  background: linear-gradient(90deg, var(--deja-violet), var(--deja-cyan), var(--deja-pink));
-}
+.game-screen .progress-track span { background: linear-gradient(90deg, var(--deja-violet), var(--deja-cyan), var(--deja-pink)); }
 
 .menu-screen .menu-button {
   background: linear-gradient(145deg, rgba(48, 22, 79, 0.86), rgba(25, 10, 48, 0.88));
@@ -177,9 +166,8 @@
   .deja-shape-field .deja-shape:nth-child(n+9) { display: none; }
 }
 
-html.reduced-motion .deja-shape,
+html.reduced-motion .deja-shape-field .deja-shape { animation: none !important; }
+
 @media (prefers-reduced-motion: reduce) {
-  .deja-shape-field .deja-shape {
-    animation: none !important;
-  }
+  .deja-shape-field .deja-shape { animation: none !important; }
 }
