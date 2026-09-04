@@ -18,7 +18,11 @@ assert.match(responsive, /\.icon-button\s*\{[^}]*min-width:\s*2\.75rem;[^}]*min-
 assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
 assert.match(styles, /html\.reduced-motion \*/);
 assert.match(indexSource, /button\.type = 'button'/);
-assert.match(indexSource, /event\.key === 'Escape'/);
+assert.match(
+  indexSource,
+  /event\.key === 'Escape'[^\{]+!pauseDialog\.open\)\s*\{[^}]*event\.preventDefault\(\);[^}]*pauseGame\(\);/s,
+  'Escape prevents the opening key from immediately canceling the pause dialog'
+);
 for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
   assert.match(indexSource, new RegExp(key));
 }
@@ -271,16 +275,23 @@ api.setGame(gameState([0, 0, 1, 2, 3, 3, 4, 4, 5, 5, 6, 6]));
 
 api.flipCard(0);
 assert.equal(api.getGame().open.length, 1, 'first card opens');
+assert.deepEqual(feedback, ['select'], 'valid card selection emits one select cue');
 api.flipCard(1);
 flushTimers();
 assert.equal(api.getGame().matchedPairs, 1, 'matching pair resolves');
 assert.equal(elements['card-grid'].cards[0].disabled, true, 'matched cards become inert');
+assert.deepEqual(feedback, ['select', 'select', 'match'], 'matching turn emits two selects and one match cue');
 
 api.flipCard(2);
 api.flipCard(3);
 flushTimers();
 assert.equal(api.getGame().mistakes, 1, 'mismatch increments mistakes');
 assert.equal(api.getGame().open.length, 0, 'mismatch returns both cards');
+assert.deepEqual(
+  feedback,
+  ['select', 'select', 'match', 'select', 'select', 'mistake'],
+  'mismatch turn emits two selects and one mistake cue'
+);
 
 api.pauseGame();
 assert.equal(api.getGame().paused, true, 'pause freezes the game');
@@ -299,10 +310,12 @@ assert.equal(api.getGame().completed, true, 'last match completes the board');
 assert.equal(elements['complete-dialog'].open, true, 'completion dialog opens');
 assert.equal(elements['complete-grade'].textContent, 'EXCELLENT', 'completion rating renders');
 
-assert.deepEqual(feedback.slice(0, 2), ['select', 'select']);
-assert.ok(feedback.includes('match'));
-assert.ok(feedback.includes('mistake'));
-assert.ok(feedback.includes('complete'));
+const cueCount = (name) => feedback.filter((cue) => cue === name).length;
+assert.equal(cueCount('select'), 6, 'each of six valid card openings emits one select cue');
+assert.equal(cueCount('match'), 2, 'each resolved match emits one match cue');
+assert.equal(cueCount('mistake'), 1, 'the mismatch emits one mistake cue');
+assert.equal(cueCount('tap'), 1, 'pause emits one subtle tap cue');
+assert.equal(cueCount('complete'), 1, 'completion emits one cue');
 
 const smallestCards = Math.min(...viewportResults.map((result) => result.cardWidth));
 const scrollingCases = viewportResults.filter((result) => result.scrolls).length;
