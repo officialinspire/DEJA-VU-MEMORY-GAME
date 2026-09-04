@@ -6,6 +6,17 @@ DEJA VU is a mobile-first card-matching and pattern-recognition game. Flip two c
 
 Open `index.html` through any static web server, or enable GitHub Pages for the repository. The app uses only relative paths and has no runtime dependencies.
 
+## Build hosted output
+
+The root web files are the source of truth. The hosted Site serves `dist/`, which is generated and should not be edited by hand.
+
+```sh
+node scripts/build-dist.mjs
+node scripts/build-dist.mjs --check
+```
+
+Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, image, audio, or video asset. The check command fails if `dist/` is missing files, contains obsolete files, or differs from the root source.
+
 ## Features
 
 - Four board sizes: Easy, Intermediate, Advanced, and Insane
@@ -31,5 +42,6 @@ Open `index.html` through any static web server, or enable GitHub Pages for the 
 - `styles.css` — responsive design, themes, card sprite rendering, and animation
 - `index.js` — game rules, screen flow, persistence, statistics, controls, and audio
 - `sw.js` / `manifest.webmanifest` — offline and installable web app support
+- `scripts/build-dist.mjs` — deterministic `dist/` build and parity validation
 
 Built by [INSPIRE](https://www.inspireclothing.art).
