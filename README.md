@@ -22,7 +22,7 @@ Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, ima
 - Four board sizes: Easy, Intermediate, Advanced, and Insane
 - Original geometric card art from `card-flip-sprite-sheet.png`
 - Touch, mouse, and full keyboard controls
-- Timer, moves, mistakes, completion grades, and scoring
+- Timer, moves, mistakes, difficulty-relative working-memory ratings, and scoring
 - Local autosave with Continue Game
 - Persistent statistics and personal bests
 - Cyber, Woodgrain, Paper, and Light themes

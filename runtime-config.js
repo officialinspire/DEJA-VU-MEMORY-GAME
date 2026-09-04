@@ -12,6 +12,12 @@
   });
 
   const scoring = Object.freeze({ basePerPair: 1000, mistakePenalty: 350, timePenaltyPerSecond: 5 });
+  const performanceBands = Object.freeze([
+    Object.freeze({ rating: 'EXCELLENT', minimum: 85, maximum: 100 }),
+    Object.freeze({ rating: 'GOOD', minimum: 70, maximum: 84 }),
+    Object.freeze({ rating: 'AVERAGE', minimum: 50, maximum: 69 }),
+    Object.freeze({ rating: 'POOR', minimum: 0, maximum: 49 }),
+  ]);
 
   function difficultyKeyFromBoard() {
     const grid = document.querySelector('#card-grid');
@@ -22,14 +28,49 @@
 
   function calculateScore(key, mistakes, elapsedSeconds) {
     const difficulty = difficulties[key] || difficulties.easy;
+    const safeMistakes = Math.max(0, Number(mistakes) || 0);
+    const safeSeconds = Math.max(0, Number(elapsedSeconds) || 0);
     return Math.max(0,
       difficulty.pairs * scoring.basePerPair -
-      mistakes * scoring.mistakePenalty -
-      elapsedSeconds * scoring.timePenaltyPerSecond
+      safeMistakes * scoring.mistakePenalty -
+      safeSeconds * scoring.timePenaltyPerSecond
     );
   }
 
-  const runtime = Object.freeze({ difficulties, scoring, difficultyKeyFromBoard, calculateScore });
+  function calculatePerformancePercent(key, score) {
+    const difficulty = difficulties[key] || difficulties.easy;
+    const maximumScore = difficulty.pairs * scoring.basePerPair;
+    const safeScore = Math.min(maximumScore, Math.max(0, Number(score) || 0));
+    return Math.min(100, Math.max(0, Math.round((safeScore / maximumScore) * 100)));
+  }
+
+  function getPerformanceRating(performancePercent) {
+    const safePercent = Math.min(100, Math.max(0, Math.round(Number(performancePercent) || 0)));
+    return performanceBands.find((band) => safePercent >= band.minimum)?.rating || 'POOR';
+  }
+
+  function calculatePerformance(key, mistakes, elapsedSeconds) {
+    const difficulty = difficulties[key] || difficulties.easy;
+    const score = calculateScore(key, mistakes, elapsedSeconds);
+    const performancePercent = calculatePerformancePercent(key, score);
+    return Object.freeze({
+      score,
+      maximumScore: difficulty.pairs * scoring.basePerPair,
+      performancePercent,
+      rating: getPerformanceRating(performancePercent),
+    });
+  }
+
+  const runtime = Object.freeze({
+    difficulties,
+    scoring,
+    performanceBands,
+    difficultyKeyFromBoard,
+    calculateScore,
+    calculatePerformancePercent,
+    getPerformanceRating,
+    calculatePerformance,
+  });
   window.DEJA_VU_RUNTIME = runtime;
   window.DEJA_VU_BALANCE = runtime; // compatibility alias for preview/results modules
   window.DEJA_VU_PREVIEW_ACTIVE = false;
@@ -75,23 +116,4 @@
     }, delay);
   };
 
-  const completeScore = document.querySelector('#complete-score');
-  if (completeScore) {
-    new MutationObserver(() => {
-      const key = difficultyKeyFromBoard();
-      const mistakes = Number(document.querySelector('#stat-mistakes')?.textContent || 0);
-      const [minutes, seconds] = (document.querySelector('#stat-time')?.textContent || '00:00').split(':').map(Number);
-      const score = calculateScore(key, Math.max(0, mistakes || 0), Math.max(0, (minutes || 0) * 60 + (seconds || 0)));
-      const formatted = score.toLocaleString();
-      if (completeScore.textContent !== formatted) completeScore.textContent = formatted;
-    }).observe(completeScore, { childList: true, characterData: true, subtree: true });
-  }
-
-  const helpCopy = document.querySelector('#screen-help .help-copy');
-  if (helpCopy && !document.querySelector('#score-explainer')) {
-    const note = document.createElement('p');
-    note.id = 'score-explainer';
-    note.innerHTML = '<strong>Scoring:</strong> each pair is worth 1,000 points, minus 350 per mistake and 5 per gameplay second. Memorization time does not reduce your score.';
-    helpCopy.append(note);
-  }
 })();

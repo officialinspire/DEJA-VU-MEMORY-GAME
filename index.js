@@ -16,12 +16,9 @@ const STORAGE = {
   stats: 'inspireDejaVu:v1:statistics',
 };
 
-const DIFFICULTIES = {
-  easy: { label: 'Easy', rows: 3, cols: 4, pairs: 6 },
-  intermediate: { label: 'Intermediate', rows: 4, cols: 4, pairs: 8 },
-  advanced: { label: 'Advanced', rows: 4, cols: 5, pairs: 10 },
-  insane: { label: 'Insane', rows: 6, cols: 5, pairs: 15 },
-};
+const RUNTIME = window.DEJA_VU_RUNTIME;
+if (!RUNTIME) throw new Error('DEJA VU runtime configuration is unavailable.');
+const DIFFICULTIES = RUNTIME.difficulties;
 
 const PATTERNS = [
   { col: 0, row: 0, name: 'red circle' },
@@ -576,30 +573,43 @@ function completeGame() {
   removeStorage(STORAGE.game);
   updateContinueButton();
 
-  const pairs = DIFFICULTIES[game.difficulty].pairs;
-  const score = Math.max(0, pairs * 1000 - game.mistakes * 350 - game.elapsed * 5);
-  const grade = game.mistakes === 0
-    ? 'Perfect Recall'
-    : game.mistakes <= Math.ceil(pairs * 0.25)
-      ? 'Sharp Memory'
-      : game.mistakes <= Math.ceil(pairs * 0.6)
-        ? 'Pattern Seeker'
-        : 'Memory Rebuilt';
+  const performance = RUNTIME.calculatePerformance(game.difficulty, game.mistakes, game.elapsed);
+  const { score, performancePercent, rating } = performance;
 
   statistics.won += 1;
   statistics.perfect += game.mistakes === 0 ? 1 : 0;
   statistics.bestScore = Math.max(statistics.bestScore || 0, score);
   const previous = statistics.bests[game.difficulty];
+  const newBests = {
+    time: !previous || game.elapsed < previous.time,
+    mistakes: !previous || game.mistakes < previous.mistakes,
+    score: !previous || score > previous.score,
+  };
   statistics.bests[game.difficulty] = {
-    time: previous ? Math.min(previous.time, game.elapsed) : game.elapsed,
-    mistakes: previous ? Math.min(previous.mistakes, game.mistakes) : game.mistakes,
-    score: previous ? Math.max(previous.score, score) : score,
+    time: newBests.time ? game.elapsed : previous.time,
+    mistakes: newBests.mistakes ? game.mistakes : previous.mistakes,
+    score: newBests.score ? score : previous.score,
   };
   writeStorage(STORAGE.stats, statistics);
 
-  document.querySelector('#complete-grade').textContent = grade;
+  const difficulty = DIFFICULTIES[game.difficulty];
+  document.querySelector('#complete-grade').textContent = rating;
+  document.querySelector('#complete-performance').textContent = `${performancePercent}%`;
+  document.querySelector('#complete-difficulty').textContent = difficulty.label;
+  document.querySelector('#complete-moves').textContent = String(game.moves);
+  document.querySelector('#complete-mistakes').textContent = String(game.mistakes);
+  document.querySelector('#complete-time').textContent = formatTime(game.elapsed);
   document.querySelector('#complete-summary').textContent = `${game.moves} moves · ${game.mistakes} mistakes · ${formatTime(game.elapsed)}`;
   document.querySelector('#complete-score').textContent = score.toLocaleString();
+  window.dispatchEvent(new CustomEvent('deja-vu:completion', {
+    detail: {
+      difficultyKey: game.difficulty,
+      score,
+      performancePercent,
+      rating,
+      newBests,
+    },
+  }));
   syncSceneMusic();
   scheduleGameplayTask(() => {
     if (!game.completed || currentScreen !== 'game') return;
@@ -653,6 +663,7 @@ function renderStatistics() {
       <span>${best ? `${best.mistakes} mistakes` : 'No score'}</span>`;
     bestList.append(row);
   });
+  window.dispatchEvent(new CustomEvent('deja-vu:statistics-rendered'));
 }
 
 function applySettings() {
