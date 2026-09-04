@@ -740,7 +740,12 @@ function handleMenuKeys(event) {
 startScreen.addEventListener('pointerup', beginExperience, { once: true });
 window.addEventListener('keydown', (event) => {
   if (currentScreen === 'start') beginExperience();
-  if (event.key === 'Escape' && currentScreen === 'game') pauseGame();
+  if (event.key === 'Escape' && currentScreen === 'game' && !pauseDialog.open) {
+    // Without preventing this key's default action, the dialog opened below can
+    // immediately receive the same Escape and cancel itself.
+    event.preventDefault();
+    pauseGame();
+  }
   handleGridKeys(event);
   handleMenuKeys(event);
 });

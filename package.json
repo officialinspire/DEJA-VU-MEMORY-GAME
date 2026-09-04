@@ -1,0 +1,13 @@
+{
+  "name": "deja-vu-memory-game",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-dist.mjs",
+    "check:dist": "node scripts/build-dist.mjs --check",
+    "dev": "node scripts/serve-dist.mjs",
+    "test": "npm run test:responsive && npm run test:release && npm run check:dist",
+    "test:release": "node scripts/verify-release-candidate.mjs",
+    "test:responsive": "node scripts/verify-responsive.mjs"
+  }
+}
