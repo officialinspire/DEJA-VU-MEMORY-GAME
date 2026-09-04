@@ -13,6 +13,7 @@ The root web files are the source of truth. The hosted Site serves `dist/`, whic
 ```sh
 node scripts/build-dist.mjs
 node scripts/build-dist.mjs --check
+node scripts/verify-responsive.mjs
 ```
 
 Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, image, audio, or video asset. The check command fails if `dist/` is missing files, contains obsolete files, or differs from the root source.
@@ -45,5 +46,6 @@ Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, ima
 - `feedback-manager.js` — synthesized UI cues and guarded mobile vibration feedback
 - `sw.js` / `manifest.webmanifest` — offline and installable web app support
 - `scripts/build-dist.mjs` — deterministic `dist/` build and parity validation
+- `scripts/verify-responsive.mjs` — dependency-free viewport, input-flow, and accessibility regression checks
 
 Built by [INSPIRE](https://www.inspireclothing.art).

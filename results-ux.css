@@ -139,3 +139,22 @@
     grid-column: 1 / -1;
   }
 }
+
+@media (max-height: 520px) {
+  .working-memory-result {
+    margin-top: 0.4rem;
+    padding: 0.65rem;
+  }
+
+  .complete-dialog #complete-grade {
+    font-size: clamp(1.65rem, 8vw, 2.15rem);
+  }
+
+  .completion-assessment {
+    margin-top: 0.35rem;
+  }
+
+  .completion-details {
+    margin-block: 0.6rem;
+  }
+}
