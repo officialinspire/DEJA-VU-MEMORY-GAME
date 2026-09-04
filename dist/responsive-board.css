@@ -44,13 +44,13 @@
   }
 
   .game-header {
-    grid-template-columns: 2.65rem 1fr 2.65rem;
+    grid-template-columns: 2.75rem 1fr 2.75rem;
     margin-bottom: 0.45rem;
   }
 
   .icon-button {
-    min-width: 2.5rem;
-    min-height: 2.5rem;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
   }
 
   .game-title-wrap h1 {
@@ -139,7 +139,6 @@
   }
 
   .card-grid[aria-rowcount="6"] {
-    max-width: min(100%, 21rem);
     --responsive-gap: clamp(0.08rem, 0.4dvh, 0.22rem);
   }
 }
@@ -163,9 +162,6 @@
     font-size: 0.72rem;
   }
 
-  .card-grid[aria-rowcount="6"] {
-    max-width: min(100%, 18.5rem);
-  }
 }
 
 @media (orientation: landscape) and (max-height: 520px) {
@@ -180,14 +176,32 @@
   }
 
   .card-grid {
-    max-width: 21rem;
+    max-width: 24rem;
   }
 
   .card-grid[aria-colcount="5"] {
-    max-width: 19rem;
+    max-width: 26rem;
   }
 
   .card-grid[aria-rowcount="6"] {
-    max-width: 17.5rem;
+    max-width: 24rem;
+  }
+}
+
+@media (min-width: 760px) {
+  .card-grid[aria-colcount="3"] {
+    max-width: 22rem;
+  }
+
+  .card-grid[aria-colcount="4"] {
+    max-width: 28rem;
+  }
+
+  .card-grid[aria-colcount="5"] {
+    max-width: 31rem;
+  }
+
+  .card-grid[aria-rowcount="6"] {
+    max-width: 28rem;
   }
 }
