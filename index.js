@@ -1,3 +1,10 @@
+import {
+  MUSIC_SCENES,
+  configureMusic,
+  transitionMusic,
+  unlockMusic,
+} from './audio-manager.js';
+
 const STORAGE = {
   settings: 'inspireDejaVu:v1:settings',
   game: 'inspireDejaVu:v1:activeGame',
@@ -90,12 +97,6 @@ let started = false;
 let gameGeneration = 0;
 const gameplayTimers = new Set();
 let audioContext = null;
-let musicFadeFrame = 0;
-
-const music = new Audio('./deja-vu-theme.mp3');
-music.loop = true;
-music.preload = 'auto';
-music.volume = 0;
 
 function installCardFlipPolish() {
   if (document.querySelector('#deja-vu-card-flip-polish')) return;
@@ -225,6 +226,28 @@ function showScreen(name) {
   });
   const activeScreen = document.querySelector(`#screen-${name}`);
   activeScreen?.focus({ preventScroll: true });
+  syncSceneMusic();
+}
+
+function syncSceneMusic(duration = 750) {
+  configureMusic({ musicEnabled: settings.music, volume: settings.musicVolume });
+  if (!started || currentScreen === 'start' || currentScreen === 'intro') {
+    transitionMusic(MUSIC_SCENES.silent, { duration });
+    return;
+  }
+  if (currentScreen !== 'game') {
+    transitionMusic(MUSIC_SCENES.menu, { duration });
+    return;
+  }
+  if (game.completed) {
+    transitionMusic(MUSIC_SCENES.gameplay, { duration, volumeScale: 0.45 });
+    return;
+  }
+  if (game.paused || pauseDialog.open) {
+    transitionMusic(MUSIC_SCENES.menu, { duration });
+    return;
+  }
+  transitionMusic(MUSIC_SCENES.gameplay, { duration, volumeScale: 0.78 });
 }
 
 function announce(message) {
@@ -244,6 +267,7 @@ function beginExperience() {
   if (started) return;
   started = true;
   initAudio();
+  unlockMusic();
   showScreen('intro');
   introVideo.currentTime = 0;
   const playback = introVideo.play();
@@ -258,7 +282,6 @@ function showMenu() {
   if (completeDialog.open) completeDialog.close();
   updateContinueButton();
   showScreen('menu');
-  fadeMusic(settings.music ? settings.musicVolume : 0, 850);
 }
 
 function updateContinueButton() {
@@ -277,6 +300,7 @@ function hasValidSavedGame() {
 
 function openDifficultyDialog() {
   playSound('tap');
+  syncSceneMusic();
   difficultyDialog.showModal();
   difficultyDialog.querySelector('[data-difficulty]')?.focus();
 }
@@ -318,7 +342,6 @@ function startNewGame(difficultyKey, skipConfirm = false) {
   difficultyDialog.close();
   renderGame();
   showScreen('game');
-  fadeMusic(settings.music ? settings.musicVolume * 0.78 : 0, 650);
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card')?.focus());
   playSound('start');
 }
@@ -344,7 +367,6 @@ function resumeSavedGame() {
   };
   renderGame();
   showScreen('game');
-  fadeMusic(settings.music ? settings.musicVolume * 0.78 : 0, 650);
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
   playSound('tap');
 }
@@ -573,7 +595,7 @@ function completeGame() {
   document.querySelector('#complete-grade').textContent = grade;
   document.querySelector('#complete-summary').textContent = `${game.moves} moves · ${game.mistakes} mistakes · ${formatTime(game.elapsed)}`;
   document.querySelector('#complete-score').textContent = score.toLocaleString();
-  fadeMusic(settings.music ? settings.musicVolume : 0, 750);
+  syncSceneMusic();
   scheduleGameplayTask(() => {
     if (!game.completed || currentScreen !== 'game') return;
     completeDialog.showModal();
@@ -586,7 +608,7 @@ function pauseGame() {
   if (!game.active || game.completed || currentScreen !== 'game' || pauseDialog.open) return;
   game.paused = true;
   saveGame();
-  fadeMusic(settings.music ? settings.musicVolume * 0.25 : 0, 350);
+  syncSceneMusic();
   pauseDialog.showModal();
   document.querySelector('#btn-resume').focus();
   playSound('tap');
@@ -595,7 +617,7 @@ function pauseGame() {
 function resumeGame() {
   if (!game.active || game.completed) return;
   game.paused = false;
-  fadeMusic(settings.music ? settings.musicVolume * 0.78 : 0, 350);
+  syncSceneMusic();
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
 }
 
@@ -647,9 +669,7 @@ function applySettings() {
   document.querySelector('#setting-sfx-volume').value = String(settings.sfxVolume);
   document.querySelector('#setting-motion').checked = Boolean(settings.reducedMotion);
 
-  if (!settings.music) fadeMusic(0, 250);
-  else if (currentScreen === 'menu') fadeMusic(settings.musicVolume, 300);
-  else if (currentScreen === 'game' && !game.paused) fadeMusic(settings.musicVolume * 0.78, 300);
+  syncSceneMusic(300);
 }
 
 function saveSettings() {
@@ -698,25 +718,6 @@ function playSound(name) {
     tone(660, 0.18, 0.12, 'triangle');
     tone(880, 0.28, 0.24, 'sine');
   }
-}
-
-function fadeMusic(targetVolume, duration = 500) {
-  window.cancelAnimationFrame(musicFadeFrame);
-  const target = Math.max(0, Math.min(1, Number(targetVolume) || 0));
-  const startVolume = music.volume;
-  const startTime = performance.now();
-  if (target > 0) music.play().catch(() => {});
-
-  const step = (now) => {
-    const progress = Math.min(1, (now - startTime) / Math.max(1, duration));
-    music.volume = startVolume + (target - startVolume) * progress;
-    if (progress < 1) {
-      musicFadeFrame = requestAnimationFrame(step);
-    } else if (target === 0) {
-      music.pause();
-    }
-  };
-  musicFadeFrame = requestAnimationFrame(step);
 }
 
 function handleGridKeys(event) {
