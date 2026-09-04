@@ -26,7 +26,7 @@ Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, ima
 - Local autosave with Continue Game
 - Persistent statistics and personal bests
 - Cyber, Woodgrain, Paper, and Light themes
-- Scene-aware menu/gameplay music, synthesized UI sounds, and reduced-motion controls
+- Scene-aware music, restrained synthesized feedback, optional mobile haptics, and reduced-motion controls
 - Installable, offline-capable PWA
 - INSPIRE click-to-start and skippable intro sequence
 
@@ -42,6 +42,7 @@ Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, ima
 - `styles.css` — responsive design, themes, card sprite rendering, and animation
 - `index.js` — game rules, screen flow, persistence, statistics, and controls
 - `audio-manager.js` — reusable scene music, crossfades, and mobile audio unlock
+- `feedback-manager.js` — synthesized UI cues and guarded mobile vibration feedback
 - `sw.js` / `manifest.webmanifest` — offline and installable web app support
 - `scripts/build-dist.mjs` — deterministic `dist/` build and parity validation
 
