@@ -1,0 +1,179 @@
+/* Initial memorize phase + hardened card flip behavior.
+   Keep the flip compositor intentionally simple: one rotating inner element,
+   two backface-hidden surfaces, and the core game state as the only authority
+   for whether a card is hidden, revealed, or permanently matched. */
+
+.memory-card {
+  overflow: hidden;
+  contain: none;
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
+}
+
+.memory-card,
+.memory-card * {
+  -webkit-user-drag: none;
+}
+
+.memory-card-inner {
+  border-radius: inherit;
+  transform: rotateY(0deg) !important;
+  -webkit-transform: rotateY(0deg) !important;
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+  transform-origin: center center;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.card-side {
+  overflow: hidden;
+  border-radius: inherit;
+  background-clip: padding-box;
+  -webkit-backface-visibility: hidden !important;
+  backface-visibility: hidden !important;
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+  pointer-events: none;
+}
+
+.card-side-back {
+  transform: rotateY(0deg) !important;
+  -webkit-transform: rotateY(0deg) !important;
+}
+
+.card-side-front {
+  transform: rotateY(180deg) !important;
+  -webkit-transform: rotateY(180deg) !important;
+}
+
+/* One tap reveals one card. A matched card uses the exact same face-up
+   orientation, so replacing is-flipped with is-matched never reverses it. */
+.memory-card.is-flipped .memory-card-inner,
+.memory-card.is-matched .memory-card-inner {
+  transform: rotateY(180deg) !important;
+  -webkit-transform: rotateY(180deg) !important;
+}
+
+/* Do not disable pointer targeting on a merely revealed card. The game state
+   machine already rejects tapping the same open card, and keeping the button
+   target intact avoids touch browsers losing/suppressing the synthesized click. */
+.memory-card.is-flipped:not(.is-matched) {
+  pointer-events: auto !important;
+}
+
+.card-grid.is-preview-revealing .memory-card-inner {
+  transition: none !important;
+}
+
+.card-grid.is-previewing .memory-card {
+  pointer-events: none !important;
+  cursor: default;
+}
+
+.card-grid.is-previewing .memory-card-inner {
+  filter: none !important;
+}
+
+.memory-card.is-preview-card .card-side-front {
+  filter:
+    saturate(1.06)
+    brightness(1.03)
+    drop-shadow(0 5px 5px rgba(0, 0, 0, 0.32));
+}
+
+.game-message.is-preview-message {
+  color: var(--accent);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.memory-card:not(:disabled):not(.is-matched) {
+  cursor: pointer;
+}
+
+/* Press feedback stays on the button shell instead of altering the 3D inner
+   transform. This prevents touch-down styles from temporarily showing the back
+   of an already revealed card on mobile GPUs. */
+.memory-card:not(:disabled):not(.is-matched):active {
+  transform: scale(0.985);
+}
+
+/* Confirmed matches become permanent face-up landmarks. */
+.memory-card.is-matched {
+  opacity: 1 !important;
+  cursor: default;
+  pointer-events: none !important;
+  box-shadow:
+    inset 0 0 0 3px color-mix(in srgb, var(--success) 84%, white 16%),
+    inset 0 0 18px color-mix(in srgb, var(--success) 20%, transparent),
+    0 0 14px color-mix(in srgb, var(--success) 30%, transparent);
+}
+
+.memory-card.is-matched .memory-card-inner {
+  transition-property: none !important;
+  transform: rotateY(180deg) !important;
+  -webkit-transform: rotateY(180deg) !important;
+}
+
+.memory-card.is-matched .card-side-back {
+  visibility: hidden !important;
+}
+
+.memory-card.is-matched .card-side-front {
+  visibility: visible !important;
+  opacity: 1 !important;
+  filter:
+    saturate(1.08)
+    brightness(1.05)
+    drop-shadow(0 0 6px color-mix(in srgb, var(--success) 78%, transparent))
+    drop-shadow(0 6px 7px rgba(0, 0, 0, 0.3));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .card-grid:not(.is-previewing) .memory-card:not(:disabled):not(.is-matched):hover {
+    transform: translateY(-1px);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .memory-card:hover:not(:disabled) .memory-card-inner {
+    filter: none;
+  }
+}
+
+html.reduced-motion .memory-card-inner {
+  transition-duration: 1ms !important;
+}
+
+html.reduced-motion .card-grid.is-preview-revealing .memory-card-inner {
+  transition: none !important;
+}
+
+html.reduced-motion .memory-card.is-flipped .memory-card-inner,
+html.reduced-motion .memory-card.is-matched .memory-card-inner {
+  transform: rotateY(180deg) !important;
+  -webkit-transform: rotateY(180deg) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-card-inner {
+    transition-duration: 1ms !important;
+  }
+
+  .card-grid.is-preview-revealing .memory-card-inner {
+    transition: none !important;
+  }
+
+  .memory-card.is-flipped .memory-card-inner,
+  .memory-card.is-matched .memory-card-inner {
+    transform: rotateY(180deg) !important;
+    -webkit-transform: rotateY(180deg) !important;
+  }
+}

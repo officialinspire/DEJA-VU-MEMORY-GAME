@@ -31,6 +31,27 @@ const PATTERNS = [
   { col: 1, row: 3, name: 'purple spiral' },
 ];
 
+const TIMING = Object.freeze({
+  normal: Object.freeze({
+    cardFlip: 430,
+    matchResolve: 460,
+    mismatchStudy: 920,
+    mismatchFlipBack: 470,
+    completionDialog: 450,
+  }),
+  reduced: Object.freeze({
+    cardFlip: 1,
+    matchResolve: 10,
+    mismatchStudy: 120,
+    mismatchFlipBack: 10,
+    completionDialog: 10,
+  }),
+});
+
+function timing(name) {
+  return (settings.reducedMotion ? TIMING.reduced : TIMING.normal)[name];
+}
+
 const DEFAULT_SETTINGS = {
   theme: 'cyber',
   mode: 'dark',
@@ -66,7 +87,8 @@ let statistics = readStorage(STORAGE.stats, DEFAULT_STATS);
 let game = createEmptyGame();
 let currentScreen = 'start';
 let started = false;
-let mismatchTimer = 0;
+let gameGeneration = 0;
+const gameplayTimers = new Set();
 let audioContext = null;
 let musicFadeFrame = 0;
 
@@ -74,6 +96,49 @@ const music = new Audio('./deja-vu-theme.mp3');
 music.loop = true;
 music.preload = 'auto';
 music.volume = 0;
+
+function installCardFlipPolish() {
+  if (document.querySelector('#deja-vu-card-flip-polish')) return;
+  const style = document.createElement('style');
+  style.id = 'deja-vu-card-flip-polish';
+  style.textContent = `
+    :root { --card-flip-duration: ${TIMING.normal.cardFlip}ms; }
+    .memory-card {
+      transform: translateZ(0);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .memory-card-inner {
+      will-change: transform;
+      transform-origin: center center;
+      transition-duration: var(--card-flip-duration) !important;
+    }
+    .card-side {
+      transform-style: preserve-3d;
+      -webkit-transform-style: preserve-3d;
+    }
+    .card-side-back {
+      transform: rotateY(0deg) translateZ(0.2px);
+    }
+    .card-side-front {
+      transform: rotateY(180deg) translateZ(0.2px);
+    }
+    .memory-card.is-flipped,
+    .memory-card.is-matched {
+      pointer-events: none;
+    }
+    .memory-card.is-matched .memory-card-inner {
+      transition: none !important;
+    }
+    .reduced-motion .memory-card-inner {
+      transition-duration: ${TIMING.reduced.cardFlip}ms !important;
+    }
+  `;
+  document.head.append(style);
+}
+
+function createSessionId() {
+  return crypto.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function createEmptyGame() {
   return {
@@ -88,7 +153,42 @@ function createEmptyGame() {
     elapsed: 0,
     paused: false,
     locked: false,
+    turn: 'idle',
+    completed: false,
+    sessionId: '',
+    turnId: 0,
   };
+}
+
+function scheduleGameplayTask(callback, delay) {
+  const generation = gameGeneration;
+  const sessionId = game.sessionId;
+  const turnId = game.turnId;
+  const timer = window.setTimeout(() => {
+    gameplayTimers.delete(timer);
+    if (generation !== gameGeneration) return;
+    if (sessionId !== game.sessionId) return;
+    if (turnId !== game.turnId) return;
+    callback();
+  }, delay);
+  gameplayTimers.add(timer);
+  return timer;
+}
+
+function cancelGameplayTasks() {
+  gameplayTimers.forEach((timer) => window.clearTimeout(timer));
+  gameplayTimers.clear();
+}
+
+function beginGameGeneration() {
+  cancelGameplayTasks();
+  gameGeneration += 1;
+}
+
+function resetTransientTurn() {
+  game.open = [];
+  game.locked = false;
+  game.turn = 'idle';
 }
 
 function readStorage(key, fallback) {
@@ -152,6 +252,8 @@ function beginExperience() {
 
 function showMenu() {
   introVideo.pause();
+  beginGameGeneration();
+  if (game.active) resetTransientTurn();
   if (pauseDialog.open) pauseDialog.close();
   if (completeDialog.open) completeDialog.close();
   updateContinueButton();
@@ -201,13 +303,14 @@ function startNewGame(difficultyKey, skipConfirm = false) {
   if (!DIFFICULTIES[difficultyKey]) return;
   if (!skipConfirm && game.active && !window.confirm('Start a new game? Your current board will be replaced.')) return;
 
-  window.clearTimeout(mismatchTimer);
+  beginGameGeneration();
   const difficulty = DIFFICULTIES[difficultyKey];
   game = {
     ...createEmptyGame(),
     active: true,
     difficulty: difficultyKey,
     deck: createDeck(difficulty.pairs),
+    sessionId: createSessionId(),
   };
   statistics.played += 1;
   writeStorage(STORAGE.stats, statistics);
@@ -226,12 +329,17 @@ function resumeSavedGame() {
     updateContinueButton();
     return;
   }
+  beginGameGeneration();
   game = {
     ...createEmptyGame(),
     ...saved,
     open: [],
     paused: false,
     locked: false,
+    turn: 'idle',
+    completed: false,
+    sessionId: createSessionId(),
+    turnId: 0,
     deck: saved.deck.map((card) => ({ ...card })),
   };
   renderGame();
@@ -248,6 +356,10 @@ function saveGame() {
     open: [],
     paused: false,
     locked: false,
+    turn: 'idle',
+    completed: false,
+    sessionId: '',
+    turnId: 0,
     deck: game.deck.map((card) => ({ ...card })),
   };
   writeStorage(STORAGE.game, stableGame);
@@ -298,12 +410,17 @@ function updateGameDisplay() {
 }
 
 function flipCard(index) {
-  if (!game.active || game.paused || game.locked) return;
+  if (!game.active || game.paused || game.locked || game.completed) return;
+  if (!['idle', 'one-open'].includes(game.turn)) return;
+  if (game.open.length >= 2) return;
+
   const card = game.deck[index];
   const button = cardGrid.querySelector(`[data-index="${index}"]`);
-  if (!card || card.matched || game.open.includes(index) || !button) return;
+  if (!card || card.matched || game.open.includes(index) || !button || button.disabled) return;
 
+  if (game.open.length === 0) game.turnId += 1;
   game.open.push(index);
+  game.turn = game.open.length === 1 ? 'one-open' : 'resolving';
   button.classList.add('is-flipped');
   button.setAttribute('aria-label', PATTERNS[card.pattern].name);
   button.setAttribute('aria-pressed', 'true');
@@ -319,10 +436,15 @@ function flipCard(index) {
   const [firstIndex, secondIndex] = game.open;
   const first = game.deck[firstIndex];
   const second = game.deck[secondIndex];
+  if (!first || !second || firstIndex === secondIndex) {
+    resetTransientTurn();
+    renderGame();
+    return;
+  }
   updateGameDisplay();
 
   if (first.pattern === second.pattern) {
-    window.setTimeout(() => resolveMatch(firstIndex, secondIndex), settings.reducedMotion ? 10 : 360);
+    scheduleGameplayTask(() => resolveMatch(firstIndex, secondIndex), timing('matchResolve'));
   } else {
     game.mistakes += 1;
     updateGameDisplay();
@@ -332,27 +454,43 @@ function flipCard(index) {
     const secondButton = cardGrid.querySelector(`[data-index="${secondIndex}"]`);
     firstButton?.classList.add('is-wrong');
     secondButton?.classList.add('is-wrong');
-    mismatchTimer = window.setTimeout(
-      () => resolveMismatch(firstIndex, secondIndex),
-      settings.reducedMotion ? 120 : 920
-    );
+    scheduleGameplayTask(() => beginMismatchFlipBack(firstIndex, secondIndex), timing('mismatchStudy'));
   }
 }
 
+function isCurrentResolvingPair(firstIndex, secondIndex) {
+  return Boolean(
+    game.active &&
+    !game.completed &&
+    game.locked &&
+    game.turn === 'resolving' &&
+    game.open.length === 2 &&
+    game.open[0] === firstIndex &&
+    game.open[1] === secondIndex &&
+    game.deck[firstIndex] &&
+    game.deck[secondIndex]
+  );
+}
+
 function resolveMatch(firstIndex, secondIndex) {
-  game.deck[firstIndex].matched = true;
-  game.deck[secondIndex].matched = true;
+  if (!isCurrentResolvingPair(firstIndex, secondIndex)) return;
+  const first = game.deck[firstIndex];
+  const second = game.deck[secondIndex];
+  if (first.matched || second.matched || first.pattern !== second.pattern) return;
+
+  first.matched = true;
+  second.matched = true;
   game.matchedPairs += 1;
-  game.open = [];
-  game.locked = false;
+  resetTransientTurn();
 
   [firstIndex, secondIndex].forEach((index) => {
     const button = cardGrid.querySelector(`[data-index="${index}"]`);
     if (!button) return;
-    button.classList.remove('is-flipped');
     button.classList.add('is-matched');
+    button.classList.remove('is-flipped');
     button.disabled = true;
     button.setAttribute('aria-label', `Matched ${PATTERNS[game.deck[index].pattern].name}`);
+    button.setAttribute('aria-pressed', 'true');
   });
 
   updateGameDisplay();
@@ -360,7 +498,7 @@ function resolveMatch(firstIndex, secondIndex) {
   announce(`Match found. ${game.matchedPairs} pairs complete.`);
   playSound('match');
 
-  if (game.matchedPairs === DIFFICULTIES[game.difficulty].pairs) {
+  if (game.matchedPairs >= DIFFICULTIES[game.difficulty].pairs) {
     completeGame();
   } else {
     saveGame();
@@ -368,17 +506,28 @@ function resolveMatch(firstIndex, secondIndex) {
   }
 }
 
-function resolveMismatch(firstIndex, secondIndex) {
+function beginMismatchFlipBack(firstIndex, secondIndex) {
+  if (!isCurrentResolvingPair(firstIndex, secondIndex)) return;
+  const first = game.deck[firstIndex];
+  const second = game.deck[secondIndex];
+  if (first.matched || second.matched || first.pattern === second.pattern) return;
+
   [firstIndex, secondIndex].forEach((index) => {
     const button = cardGrid.querySelector(`[data-index="${index}"]`);
     if (!button) return;
-    button.classList.remove('is-flipped', 'is-wrong');
+    button.classList.remove('is-wrong');
+    button.classList.remove('is-flipped');
     button.setAttribute('aria-label', `Hidden card ${index + 1}`);
     button.setAttribute('aria-pressed', 'false');
   });
-  game.open = [];
-  game.locked = false;
+
   setGameMessage('Try again.');
+  scheduleGameplayTask(() => finishMismatch(firstIndex, secondIndex), timing('mismatchFlipBack'));
+}
+
+function finishMismatch(firstIndex, secondIndex) {
+  if (!isCurrentResolvingPair(firstIndex, secondIndex)) return;
+  resetTransientTurn();
   saveGame();
   focusNextCard(secondIndex);
 }
@@ -390,8 +539,13 @@ function focusNextCard(fromIndex) {
 }
 
 function completeGame() {
+  if (!game.active || game.completed) return;
+  game.completed = true;
   game.active = false;
   game.paused = true;
+  game.locked = true;
+  game.turn = 'complete';
+  beginGameGeneration();
   removeStorage(STORAGE.game);
   updateContinueButton();
 
@@ -420,15 +574,16 @@ function completeGame() {
   document.querySelector('#complete-summary').textContent = `${game.moves} moves · ${game.mistakes} mistakes · ${formatTime(game.elapsed)}`;
   document.querySelector('#complete-score').textContent = score.toLocaleString();
   fadeMusic(settings.music ? settings.musicVolume : 0, 750);
-  window.setTimeout(() => {
+  scheduleGameplayTask(() => {
+    if (!game.completed || currentScreen !== 'game') return;
     completeDialog.showModal();
     document.querySelector('#btn-play-again').focus();
     playSound('win');
-  }, settings.reducedMotion ? 10 : 450);
+  }, timing('completionDialog'));
 }
 
 function pauseGame() {
-  if (!game.active || currentScreen !== 'game' || pauseDialog.open) return;
+  if (!game.active || game.completed || currentScreen !== 'game' || pauseDialog.open) return;
   game.paused = true;
   saveGame();
   fadeMusic(settings.music ? settings.musicVolume * 0.25 : 0, 350);
@@ -438,7 +593,7 @@ function pauseGame() {
 }
 
 function resumeGame() {
-  if (!game.active) return;
+  if (!game.active || game.completed) return;
   game.paused = false;
   fadeMusic(settings.music ? settings.musicVolume * 0.78 : 0, 350);
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
@@ -565,7 +720,7 @@ function fadeMusic(targetVolume, duration = 500) {
 }
 
 function handleGridKeys(event) {
-  if (currentScreen !== 'game' || game.paused || pauseDialog.open || completeDialog.open) return;
+  if (currentScreen !== 'game' || game.paused || game.locked || pauseDialog.open || completeDialog.open) return;
   const focused = document.activeElement.closest?.('.memory-card');
   if (!focused) return;
   const index = Number(focused.dataset.index);
@@ -728,7 +883,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 window.setInterval(() => {
-  if (!game.active || game.paused || currentScreen !== 'game') return;
+  if (!game.active || game.paused || game.completed || currentScreen !== 'game') return;
   game.elapsed += 1;
   document.querySelector('#stat-time').textContent = formatTime(game.elapsed);
   if (game.elapsed % 5 === 0) saveGame();
@@ -736,6 +891,7 @@ window.setInterval(() => {
 
 window.addEventListener('beforeunload', saveGame);
 
+installCardFlipPolish();
 applySettings();
 updateContinueButton();
 

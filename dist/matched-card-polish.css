@@ -1,0 +1,52 @@
+/* Matched-card visual feedback.
+   Responsive board rules are loaded explicitly by index.html. */
+
+.memory-card.is-matched:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.memory-card.is-matched {
+  isolation: isolate;
+}
+
+.memory-card.is-matched::after {
+  content: '';
+  position: absolute;
+  inset: 4%;
+  z-index: 2;
+  border: 1px solid color-mix(in srgb, var(--success) 58%, transparent);
+  border-radius: 10%;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--success) 14%, transparent),
+    0 0 14px color-mix(in srgb, var(--success) 22%, transparent);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.memory-card.is-matched .card-side-front {
+  opacity: 1;
+  filter:
+    saturate(1.04)
+    brightness(1.03)
+    drop-shadow(0 0 5px color-mix(in srgb, var(--success) 72%, transparent))
+    drop-shadow(0 6px 7px rgba(0, 0, 0, 0.3));
+}
+
+.memory-card.is-matched .memory-card-inner {
+  filter: none;
+}
+
+.memory-card.is-matched:focus-visible {
+  outline-color: var(--success);
+}
+
+html.reduced-motion .memory-card.is-matched::after {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 18%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-card.is-matched::after {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 18%, transparent);
+  }
+}

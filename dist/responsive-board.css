@@ -1,0 +1,193 @@
+/* Responsive gameplay board sizing.
+   Avoid custom-property multiplication in calc(): some mobile browsers discard
+   those width expressions. The board is fluid first, then capped explicitly by
+   column count so every card remains inside the viewport on mobile and desktop. */
+
+.card-grid {
+  --responsive-gap: clamp(0.2rem, 1vw, 0.46rem);
+  width: 100%;
+  max-width: 24rem;
+  gap: var(--responsive-gap);
+  align-items: start;
+  justify-content: center;
+}
+
+.card-grid[aria-colcount="3"] {
+  max-width: 18rem;
+}
+
+.card-grid[aria-colcount="4"] {
+  max-width: 24rem;
+}
+
+.card-grid[aria-colcount="5"] {
+  --responsive-gap: clamp(0.14rem, 0.8vw, 0.38rem);
+  max-width: 26rem;
+}
+
+/* Keep dense six-row boards compact. The game screen itself remains vertically
+   scrollable, so no card can be clipped by browser chrome on short displays. */
+.card-grid[aria-rowcount="6"] {
+  max-width: min(100%, 24rem);
+  --responsive-gap: clamp(0.12rem, 0.55dvh, 0.3rem);
+}
+
+.memory-card {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 430px) {
+  .game-screen {
+    padding-inline: calc(0.45rem + var(--safe-left)) calc(0.45rem + var(--safe-right));
+  }
+
+  .game-header {
+    grid-template-columns: 2.65rem 1fr 2.65rem;
+    margin-bottom: 0.45rem;
+  }
+
+  .icon-button {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+  }
+
+  .game-title-wrap h1 {
+    font-size: 1.45rem;
+  }
+
+  .game-stats {
+    gap: 0.32rem;
+    margin-bottom: 0.38rem;
+  }
+
+  .game-stats div {
+    min-height: 3rem;
+    border-radius: 11px;
+  }
+
+  .progress-track {
+    margin-top: 0.5rem;
+  }
+
+  .game-message {
+    margin: 0.38rem auto 0.28rem;
+    font-size: 0.76rem;
+  }
+
+  .card-grid {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .card-grid[aria-colcount="5"] {
+    --responsive-gap: clamp(0.1rem, 0.65vw, 0.28rem);
+  }
+
+  .pairs-label {
+    margin-top: 0.48rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .card-grid {
+    --responsive-gap: 0.16rem;
+  }
+
+  .card-grid[aria-colcount="5"] {
+    --responsive-gap: 0.1rem;
+  }
+
+  .game-stats span {
+    font-size: 0.61rem;
+  }
+
+  .game-stats strong {
+    font-size: 0.96rem;
+  }
+}
+
+@media (max-height: 760px) {
+  .game-screen {
+    padding-top: calc(0.45rem + var(--safe-top));
+  }
+
+  .game-header {
+    margin-bottom: 0.3rem;
+  }
+
+  .game-stats {
+    margin-bottom: 0.28rem;
+  }
+
+  .game-stats div {
+    min-height: 2.85rem;
+  }
+
+  .progress-track {
+    margin-top: 0.4rem;
+  }
+
+  .game-message {
+    min-height: 1rem;
+    margin: 0.3rem auto 0.22rem;
+  }
+
+  .pairs-label {
+    margin-top: 0.4rem;
+  }
+
+  .card-grid[aria-rowcount="6"] {
+    max-width: min(100%, 21rem);
+    --responsive-gap: clamp(0.08rem, 0.4dvh, 0.22rem);
+  }
+}
+
+@media (max-height: 640px) {
+  .game-title-wrap p {
+    margin-top: 0;
+    font-size: 0.62rem;
+  }
+
+  .game-stats div {
+    min-height: 2.55rem;
+  }
+
+  .progress-track {
+    margin-top: 0.28rem;
+  }
+
+  .game-message {
+    margin-top: 0.22rem;
+    font-size: 0.72rem;
+  }
+
+  .card-grid[aria-rowcount="6"] {
+    max-width: min(100%, 18.5rem);
+  }
+}
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .game-screen {
+    padding-top: calc(0.3rem + var(--safe-top));
+    padding-bottom: calc(0.55rem + var(--safe-bottom));
+  }
+
+  .game-header,
+  .game-stats {
+    width: min(92vw, 36rem);
+  }
+
+  .card-grid {
+    max-width: 21rem;
+  }
+
+  .card-grid[aria-colcount="5"] {
+    max-width: 19rem;
+  }
+
+  .card-grid[aria-rowcount="6"] {
+    max-width: 17.5rem;
+  }
+}
