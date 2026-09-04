@@ -1,13 +1,13 @@
 // DEJA VU PWA service worker.
 // App code uses network-first while online so GitHub Pages serves gameplay fixes
 // immediately. Cached fallbacks preserve offline play.
-const CACHE_NAME = 'deja-vu-v1.0.20-rc1';
+const CACHE_NAME = 'deja-vu-v1.0.21-rc1';
 const CACHE_PREFIX = 'deja-vu-';
 
 const APP_SHELL = [
   './', './index.html', './styles.css', './deja-vu-backgrounds.css', './responsive-board.css',
   './matched-card-polish.css', './gameplay-preview.css', './results-ux.css',
-  './runtime-config.js', './index.js', './audio-manager.js', './gameplay-preview.js', './input-guard.js',
+  './runtime-config.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
   './accessibility.js', './results-ux.js', './sprite-atlas.js', './save-integrity.js',
   './stats-integrity.js', './manifest.webmanifest', './card-flip-sprite-sheet.png',
   './logo.png', './inspiresoftwareintro.mp4',

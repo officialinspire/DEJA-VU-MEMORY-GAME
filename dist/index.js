@@ -4,6 +4,11 @@ import {
   transitionMusic,
   unlockMusic,
 } from './audio-manager.js';
+import {
+  configureFeedback,
+  playFeedback,
+  unlockFeedback,
+} from './feedback-manager.js';
 
 const STORAGE = {
   settings: 'inspireDejaVu:v1:settings',
@@ -66,6 +71,7 @@ const DEFAULT_SETTINGS = {
   musicVolume: 0.22,
   sfx: true,
   sfxVolume: 0.35,
+  haptics: true,
   reducedMotion: false,
 };
 
@@ -96,7 +102,6 @@ let currentScreen = 'start';
 let started = false;
 let gameGeneration = 0;
 const gameplayTimers = new Set();
-let audioContext = null;
 
 function installCardFlipPolish() {
   if (document.querySelector('#deja-vu-card-flip-polish')) return;
@@ -266,7 +271,7 @@ function setGameMessage(message, tone = '') {
 function beginExperience() {
   if (started) return;
   started = true;
-  initAudio();
+  unlockFeedback();
   unlockMusic();
   showScreen('intro');
   introVideo.currentTime = 0;
@@ -299,7 +304,7 @@ function hasValidSavedGame() {
 }
 
 function openDifficultyDialog() {
-  playSound('tap');
+  playFeedback('tap');
   syncSceneMusic();
   difficultyDialog.showModal();
   difficultyDialog.querySelector('[data-difficulty]')?.focus();
@@ -343,7 +348,7 @@ function startNewGame(difficultyKey, skipConfirm = false) {
   renderGame();
   showScreen('game');
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card')?.focus());
-  playSound('start');
+  playFeedback('start');
 }
 
 function resumeSavedGame() {
@@ -368,7 +373,7 @@ function resumeSavedGame() {
   renderGame();
   showScreen('game');
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
-  playSound('tap');
+  playFeedback('tap');
 }
 
 function saveGame() {
@@ -446,7 +451,7 @@ function flipCard(index) {
   button.classList.add('is-flipped');
   button.setAttribute('aria-label', PATTERNS[card.pattern].name);
   button.setAttribute('aria-pressed', 'true');
-  playSound('flip');
+  playFeedback('select');
 
   if (game.open.length === 1) {
     setGameMessage('Choose its match.');
@@ -471,7 +476,7 @@ function flipCard(index) {
     game.mistakes += 1;
     updateGameDisplay();
     setGameMessage('Not a match — remember both positions.', 'error');
-    playSound('miss');
+    playFeedback('mistake');
     const firstButton = cardGrid.querySelector(`[data-index="${firstIndex}"]`);
     const secondButton = cardGrid.querySelector(`[data-index="${secondIndex}"]`);
     firstButton?.classList.add('is-wrong');
@@ -518,7 +523,7 @@ function resolveMatch(firstIndex, secondIndex) {
   updateGameDisplay();
   setGameMessage('Match found.', 'success');
   announce(`Match found. ${game.matchedPairs} pairs complete.`);
-  playSound('match');
+  playFeedback('match');
 
   if (game.matchedPairs >= DIFFICULTIES[game.difficulty].pairs) {
     completeGame();
@@ -600,7 +605,7 @@ function completeGame() {
     if (!game.completed || currentScreen !== 'game') return;
     completeDialog.showModal();
     document.querySelector('#btn-play-again').focus();
-    playSound('win');
+    playFeedback('complete');
   }, timing('completionDialog'));
 }
 
@@ -611,7 +616,7 @@ function pauseGame() {
   syncSceneMusic();
   pauseDialog.showModal();
   document.querySelector('#btn-resume').focus();
-  playSound('tap');
+  playFeedback('tap');
 }
 
 function resumeGame() {
@@ -667,57 +672,20 @@ function applySettings() {
   document.querySelector('#setting-music-volume').value = String(settings.musicVolume);
   document.querySelector('#setting-sfx').checked = Boolean(settings.sfx);
   document.querySelector('#setting-sfx-volume').value = String(settings.sfxVolume);
+  document.querySelector('#setting-haptics').checked = Boolean(settings.haptics);
   document.querySelector('#setting-motion').checked = Boolean(settings.reducedMotion);
 
+  configureFeedback({
+    soundEnabled: settings.sfx,
+    soundVolume: settings.sfxVolume,
+    vibrationEnabled: settings.haptics,
+  });
   syncSceneMusic(300);
 }
 
 function saveSettings() {
   writeStorage(STORAGE.settings, settings);
   applySettings();
-}
-
-function initAudio() {
-  if (!audioContext) {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (AudioContextClass) audioContext = new AudioContextClass();
-  }
-  audioContext?.resume?.();
-}
-
-function tone(frequency, duration, delay = 0, type = 'sine') {
-  if (!settings.sfx || !audioContext) return;
-  const start = audioContext.currentTime + delay;
-  const oscillator = audioContext.createOscillator();
-  const gain = audioContext.createGain();
-  oscillator.type = type;
-  oscillator.frequency.setValueAtTime(frequency, start);
-  gain.gain.setValueAtTime(0.0001, start);
-  gain.gain.exponentialRampToValueAtTime(Math.max(0.001, settings.sfxVolume * 0.12), start + 0.012);
-  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-  oscillator.connect(gain).connect(audioContext.destination);
-  oscillator.start(start);
-  oscillator.stop(start + duration + 0.02);
-}
-
-function playSound(name) {
-  initAudio();
-  if (name === 'tap') tone(330, 0.06, 0, 'triangle');
-  if (name === 'flip') tone(510, 0.07, 0, 'triangle');
-  if (name === 'start') {
-    tone(330, 0.09, 0, 'triangle');
-    tone(495, 0.12, 0.07, 'triangle');
-  }
-  if (name === 'match') {
-    tone(620, 0.13, 0, 'sine');
-    tone(820, 0.18, 0.08, 'sine');
-  }
-  if (name === 'miss') tone(145, 0.2, 0, 'sawtooth');
-  if (name === 'win') {
-    tone(440, 0.18, 0, 'triangle');
-    tone(660, 0.18, 0.12, 'triangle');
-    tone(880, 0.28, 0.24, 'sine');
-  }
 }
 
 function handleGridKeys(event) {
@@ -773,22 +741,22 @@ introVideo.addEventListener('error', showMenu);
 document.querySelector('#btn-new-game').addEventListener('click', openDifficultyDialog);
 continueButton.addEventListener('click', resumeSavedGame);
 document.querySelector('#btn-statistics').addEventListener('click', () => {
-  playSound('tap');
+  playFeedback('tap');
   renderStatistics();
   showScreen('statistics');
 });
 document.querySelector('#btn-how-to-play').addEventListener('click', () => {
-  playSound('tap');
+  playFeedback('tap');
   showScreen('help');
 });
 document.querySelector('#btn-settings').addEventListener('click', () => {
-  playSound('tap');
+  playFeedback('tap');
   applySettings();
   showScreen('settings');
 });
 
 document.querySelectorAll('[data-back-menu]').forEach((button) => button.addEventListener('click', () => {
-  playSound('tap');
+  playFeedback('tap');
   showMenu();
 }));
 
@@ -798,18 +766,18 @@ difficultyDialog.querySelectorAll('[data-difficulty]').forEach((button) => butto
 
 document.querySelector('#btn-game-menu').addEventListener('click', () => {
   saveGame();
-  playSound('tap');
+  playFeedback('tap');
   showMenu();
 });
 document.querySelector('#btn-pause').addEventListener('click', pauseGame);
 document.querySelector('#btn-resume').addEventListener('click', () => {
-  playSound('tap');
+  playFeedback('tap');
   resumeGame();
 });
 document.querySelector('#btn-pause-menu').addEventListener('click', () => {
   saveGame();
   pauseDialog.close();
-  playSound('tap');
+  playFeedback('tap');
   showMenu();
 });
 pauseDialog.addEventListener('close', () => {
@@ -823,7 +791,7 @@ document.querySelector('#btn-play-again').addEventListener('click', () => {
 });
 document.querySelector('#btn-complete-menu').addEventListener('click', () => {
   completeDialog.close();
-  playSound('tap');
+  playFeedback('tap');
   showMenu();
 });
 
@@ -833,23 +801,23 @@ document.querySelector('#btn-reset-stats').addEventListener('click', () => {
   writeStorage(STORAGE.stats, statistics);
   renderStatistics();
   announce('Statistics reset.');
-  playSound('tap');
+  playFeedback('tap');
 });
 
 document.querySelector('#setting-theme').addEventListener('change', (event) => {
   settings.theme = event.target.value;
   saveSettings();
-  playSound('tap');
+  playFeedback('tap');
 });
 document.querySelector('#setting-mode').addEventListener('change', (event) => {
   settings.mode = event.target.value;
   saveSettings();
-  playSound('tap');
+  playFeedback('tap');
 });
 document.querySelector('#setting-music').addEventListener('change', (event) => {
   settings.music = event.target.checked;
   saveSettings();
-  playSound('tap');
+  playFeedback('tap');
 });
 document.querySelector('#setting-music-volume').addEventListener('input', (event) => {
   settings.musicVolume = Number(event.target.value);
@@ -858,16 +826,21 @@ document.querySelector('#setting-music-volume').addEventListener('input', (event
 document.querySelector('#setting-sfx').addEventListener('change', (event) => {
   settings.sfx = event.target.checked;
   saveSettings();
-  playSound('tap');
+  playFeedback('tap');
 });
 document.querySelector('#setting-sfx-volume').addEventListener('input', (event) => {
   settings.sfxVolume = Number(event.target.value);
   saveSettings();
 });
+document.querySelector('#setting-haptics').addEventListener('change', (event) => {
+  settings.haptics = event.target.checked;
+  saveSettings();
+  playFeedback('tap');
+});
 document.querySelector('#setting-motion').addEventListener('change', (event) => {
   settings.reducedMotion = event.target.checked;
   saveSettings();
-  playSound('tap');
+  playFeedback('tap');
 });
 
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
