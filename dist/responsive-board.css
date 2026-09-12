@@ -205,3 +205,104 @@
     max-width: 28rem;
   }
 }
+
+/* Desktop viewport fit.
+   The board was capped by width alone, so on short desktop windows the lower
+   rows fell outside the visual viewport (measured: 1366x768 lost 154px of the
+   6-row board, 1280x720 lost 149px, and every 125%/150% zoom step lost more).
+   Cap the board by the available height as well: subtract the measured game
+   chrome (header, stats, progress, message, pairs label, padding, row gaps)
+   from the viewport, then convert that height budget into a width using the
+   card aspect ratio (0.774) times columns over rows.
+   Literal lengths are used instead of custom properties inside the
+   multiplication, per the calc() note at the top of this file.
+   Scoped to precise pointers so touch layouts keep their existing sizing. */
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) {
+  .card-grid[aria-rowcount="3"][aria-colcount="4"] {
+    max-width: min(28rem, calc((100vh - 16.5rem) * 1.032));
+    max-width: min(28rem, calc((100dvh - 16.5rem) * 1.032));
+  }
+
+  .card-grid[aria-rowcount="4"][aria-colcount="4"] {
+    max-width: min(28rem, calc((100vh - 16.5rem) * 0.774));
+    max-width: min(28rem, calc((100dvh - 16.5rem) * 0.774));
+  }
+
+  .card-grid[aria-rowcount="4"][aria-colcount="5"] {
+    max-width: min(31rem, calc((100vh - 16.5rem) * 0.9675));
+    max-width: min(31rem, calc((100dvh - 16.5rem) * 0.9675));
+  }
+
+  .card-grid[aria-rowcount="6"][aria-colcount="5"] {
+    max-width: min(28rem, calc((100vh - 16.5rem) * 0.645));
+    max-width: min(28rem, calc((100dvh - 16.5rem) * 0.645));
+  }
+}
+
+/* Shorter desktop windows run the compact chrome from the height queries
+   above, so the height budget grows back by the amount those queries save. */
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 760px) {
+  .card-grid[aria-rowcount="3"][aria-colcount="4"] {
+    max-width: min(28rem, calc((100vh - 13rem) * 1.032));
+    max-width: min(28rem, calc((100dvh - 13rem) * 1.032));
+  }
+
+  .card-grid[aria-rowcount="4"][aria-colcount="4"] {
+    max-width: min(28rem, calc((100vh - 13rem) * 0.774));
+    max-width: min(28rem, calc((100dvh - 13rem) * 0.774));
+  }
+
+  .card-grid[aria-rowcount="4"][aria-colcount="5"] {
+    max-width: min(31rem, calc((100vh - 13rem) * 0.9675));
+    max-width: min(31rem, calc((100dvh - 13rem) * 0.9675));
+  }
+
+  .card-grid[aria-rowcount="6"][aria-colcount="5"] {
+    max-width: min(28rem, calc((100vh - 13rem) * 0.645));
+    max-width: min(28rem, calc((100dvh - 13rem) * 0.645));
+  }
+}
+
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 640px) {
+  .card-grid[aria-rowcount="3"][aria-colcount="4"] {
+    max-width: min(28rem, calc((100vh - 12.5rem) * 1.032));
+    max-width: min(28rem, calc((100dvh - 12.5rem) * 1.032));
+  }
+
+  .card-grid[aria-rowcount="4"][aria-colcount="4"] {
+    max-width: min(28rem, calc((100vh - 12.5rem) * 0.774));
+    max-width: min(28rem, calc((100dvh - 12.5rem) * 0.774));
+  }
+
+  .card-grid[aria-rowcount="4"][aria-colcount="5"] {
+    max-width: min(31rem, calc((100vh - 12.5rem) * 0.9675));
+    max-width: min(31rem, calc((100dvh - 12.5rem) * 0.9675));
+  }
+
+  .card-grid[aria-rowcount="6"][aria-colcount="5"] {
+    max-width: min(28rem, calc((100vh - 12.5rem) * 0.645));
+    max-width: min(28rem, calc((100dvh - 12.5rem) * 0.645));
+  }
+}
+
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 520px) {
+  .card-grid[aria-rowcount="3"][aria-colcount="4"] {
+    max-width: min(28rem, calc((100vh - 11.75rem) * 1.032));
+    max-width: min(28rem, calc((100dvh - 11.75rem) * 1.032));
+  }
+
+  .card-grid[aria-rowcount="4"][aria-colcount="4"] {
+    max-width: min(28rem, calc((100vh - 11.75rem) * 0.774));
+    max-width: min(28rem, calc((100dvh - 11.75rem) * 0.774));
+  }
+
+  .card-grid[aria-rowcount="4"][aria-colcount="5"] {
+    max-width: min(31rem, calc((100vh - 11.75rem) * 0.9675));
+    max-width: min(31rem, calc((100dvh - 11.75rem) * 0.9675));
+  }
+
+  .card-grid[aria-rowcount="6"][aria-colcount="5"] {
+    max-width: min(28rem, calc((100vh - 11.75rem) * 0.645));
+    max-width: min(28rem, calc((100dvh - 11.75rem) * 0.645));
+  }
+}

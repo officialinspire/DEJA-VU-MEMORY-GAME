@@ -1032,6 +1032,73 @@ html.reduced-motion *::after {
   }
 }
 
+/* Short desktop windows: the menu footer (logo and site link) sat below the
+   fold at 150% browser zoom on 720p/768p displays. Tighten the same spacing
+   the short-height mobile query tightens, without touching touch layouts. */
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 640px) {
+  .menu-screen {
+    padding-top: calc(1.25rem + var(--safe-top));
+  }
+
+  .menu-content .brand {
+    margin-bottom: 1rem;
+    font-size: clamp(2.6rem, 9vh, 4.25rem);
+  }
+
+  .menu-button {
+    min-height: 2.7rem;
+  }
+
+  .menu-footer {
+    margin-top: 0.8rem;
+  }
+
+  .menu-footer img {
+    width: 2rem;
+  }
+}
+
+/* Short desktop windows. Modal content (the completion summary above all)
+   was taller than the window between 520px and 700px of viewport height, so
+   the closing buttons sat below the dialog fold. Reclaim the vertical padding
+   there. Placed before the 520px query so the more compact landscape rules
+   still win, and gated on a precise pointer so phone and tablet layouts are
+   untouched. */
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 700px) {
+  .game-dialog {
+    padding: 1.25rem;
+  }
+
+  .dialog-heading {
+    margin-bottom: 0.85rem;
+  }
+
+  .dialog-primary,
+  .dialog-cancel {
+    min-height: 2.9rem;
+    margin-top: 0.5rem;
+  }
+
+  .difficulty-list {
+    gap: 0.5rem;
+  }
+
+  .difficulty-list button {
+    min-height: 3.7rem;
+  }
+
+  .completion-mark {
+    width: 3rem;
+    height: 3rem;
+    margin-bottom: 0.7rem;
+    font-size: 1.45rem;
+  }
+
+  .compact-dialog h2 {
+    margin-bottom: 1rem;
+  }
+}
+
 @media (max-height: 520px) {
   .game-dialog {
     padding: 1rem;
@@ -1053,6 +1120,31 @@ html.reduced-motion *::after {
     width: 3rem;
     height: 3rem;
     margin-bottom: 0.7rem;
+  }
+}
+
+/* Very short desktop windows (720p and 768p at 150% browser zoom). The
+   completion summary is still taller than the window after the tiers above,
+   so drop the purely decorative completion mark and the last of the padding
+   rather than leave the closing buttons below the dialog fold. Ordered after
+   the 520px query so these desktop-only values win there. */
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 540px) {
+  .game-dialog {
+    padding: 0.75rem 1rem;
+  }
+
+  .completion-mark {
+    display: none;
+  }
+
+  .complete-dialog .eyebrow {
+    margin-bottom: 0.4rem;
+  }
+
+  .dialog-primary,
+  .dialog-cancel {
+    min-height: 2.85rem;
+    margin-top: 0.45rem;
   }
 }
 
