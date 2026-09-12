@@ -1,3 +1,29 @@
+## Offline install
+
+**First-online-load requirement: the app must be opened once over the network before it can run offline.** That first load registers `sw.js`, which precaches the entire app shell — HTML, CSS, JavaScript, the card sprite, the logo, every icon, the intro video, and both music tracks — into one versioned cache. Offline play is available as soon as that install finishes; the worker claims the first page, so no second visit and no reload are needed. If the connection drops mid-install, nothing is activated and the next online load starts over.
+
+### Installing for offline play
+
+1. Open the site once with a working connection and let it finish loading. The precache is 28 entries, about 7.8 MB, most of it the two music tracks and the card sprite.
+2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>` cache with 28 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 7.8 MB.
+3. Install the app if you want a standalone window: **Chrome/Edge desktop** — the install icon in the address bar, or ⋮ → Cast, save and share → Install. **Android Chrome** — ⋮ → Add to Home screen. **iOS Safari** — Share → Add to Home Screen (Safari has no install prompt; this is the only route).
+4. You can now go fully offline. Launching from the home screen or the installed window works with no network, as does reloading the tab.
+
+### Updating
+
+Updates apply on the **next cold start**, not on reload. A new `sw.js` precaches into a new cache and then waits, so one page session is always served by a single cache generation and never mixes old and new assets. Close the app or all its tabs and reopen to pick it up; the old cache is deleted at that point. Reloading a tab deliberately does not hand over.
+
+Bump `CACHE_VERSION` in `sw.js` for every deploy — the cache name derives from it, and `npm test` pins the current value so a release cannot forget it.
+
+### Limitations
+
+- **One online load is mandatory.** There is no way to seed the cache offline. A visitor who is offline on their very first visit gets nothing.
+- **Updates need a cold start.** A player who never fully closes the app stays on the version they installed. This is deliberate: it is what guarantees a session never mixes asset versions. There is no in-app "update available" prompt.
+- **The intro video needs H.264/AAC.** `inspiresoftwareintro.mp4` is H.264 video with AAC audio, and no alternative encoding ships. Browsers built without those proprietary codecs — Chromium built from source, and some Linux distribution builds of Chromium and Firefox — cannot decode it. The app handles this correctly rather than hanging: the video reports an error and the intro is skipped straight to the menu, with everything else unaffected. The music is MP3 and is not affected. If the intro matters on those browsers, a WebM/VP9 copy would need to be added as a second `<source>`.
+- **Media failure is survivable but silent.** If the tracks or the video fail to download, install still succeeds and the game stays fully playable; there is no in-app notice that audio is unavailable, only a console warning from the worker.
+- **Storage is not guaranteed.** The precache is about 7.8 MB and the app does not request persistent storage, so a browser under storage pressure may evict it; the next online load simply re-installs. Safari in particular applies its own eviction policy to storage for sites that have not been used recently, which can drop the offline copy of a site that was only visited in a tab rather than added to the Home Screen.
+- **`file://` is not supported.** Service workers require a secure context, so registration is skipped when the page is opened directly from disk. Use a local server (`npm run dev`) or a hosted origin.
+
 # DEJA VU — Memory Game by INSPIRE
 
 DEJA VU is a mobile-first card-matching and pattern-recognition game. Flip two cards, remember their positions, and clear the board with the fewest mistakes possible.
