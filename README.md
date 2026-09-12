@@ -4,8 +4,8 @@
 
 ### Installing for offline play
 
-1. Open the site once with a working connection and let it finish loading. The precache is 28 entries, about 7.8 MB, most of it the two music tracks and the card sprite.
-2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>` cache with 28 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 7.8 MB.
+1. Open the site once with a working connection and let it finish loading. The precache is 28 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
+2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>` cache with 28 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
 3. Install the app if you want a standalone window: **Chrome/Edge desktop** — the install icon in the address bar, or ⋮ → Cast, save and share → Install. **Android Chrome** — ⋮ → Add to Home screen. **iOS Safari** — Share → Add to Home Screen (Safari has no install prompt; this is the only route).
 4. You can now go fully offline. Launching from the home screen or the installed window works with no network, as does reloading the tab.
 
@@ -21,7 +21,7 @@ Bump `CACHE_VERSION` in `sw.js` for every deploy — the cache name derives from
 - **Updates need a cold start.** A player who never fully closes the app stays on the version they installed. This is deliberate: it is what guarantees a session never mixes asset versions. There is no in-app "update available" prompt.
 - **The intro video needs H.264/AAC.** `inspiresoftwareintro.mp4` is H.264 video with AAC audio, and no alternative encoding ships. Browsers built without those proprietary codecs — Chromium built from source, and some Linux distribution builds of Chromium and Firefox — cannot decode it. The app handles this correctly rather than hanging: the video reports an error and the intro is skipped straight to the menu, with everything else unaffected. The music is MP3 and is not affected. If the intro matters on those browsers, a WebM/VP9 copy would need to be added as a second `<source>`.
 - **Media failure is survivable but silent.** If the tracks or the video fail to download, install still succeeds and the game stays fully playable; there is no in-app notice that audio is unavailable, only a console warning from the worker.
-- **Storage is not guaranteed.** The precache is about 7.8 MB and the app does not request persistent storage, so a browser under storage pressure may evict it; the next online load simply re-installs. Safari in particular applies its own eviction policy to storage for sites that have not been used recently, which can drop the offline copy of a site that was only visited in a tab rather than added to the Home Screen.
+- **Storage is not guaranteed.** The precache is about 8.2 MB and the app does not request persistent storage, so a browser under storage pressure may evict it; the next online load simply re-installs. Safari in particular applies its own eviction policy to storage for sites that have not been used recently, which can drop the offline copy of a site that was only visited in a tab rather than added to the Home Screen.
 - **`file://` is not supported.** Service workers require a secure context, so registration is skipped when the page is opened directly from disk. Use a local server (`npm run dev`) or a hosted origin.
 
 # DEJA VU — Memory Game by INSPIRE
@@ -111,6 +111,7 @@ Other behavior worth knowing:
 - `scripts/verify-responsive.mjs` — dependency-free viewport, input-flow, and accessibility regression checks
 - `scripts/verify-release-candidate.mjs` — dependency-free scoring, audio, haptics, and app-shell audit
 - `scripts/verify-browser.mjs` — rendered layout, viewport-fit, and offline regression suite
+- `scripts/generate-icons.mjs` — regenerates the PWA icons from the card back in the sprite sheet
 - `scripts/browser-harness.mjs` / `scripts/browser-probes.js` — Chromium discovery, subpath test server, and the in-page measurement helpers
 - `scripts/mobile-layout-baseline.json` — recorded phone and tablet geometry the suite guards
 
