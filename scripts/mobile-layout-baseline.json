@@ -1,0 +1,457 @@
+{
+  "iphone-se": {
+    "desktopQuery": false,
+    "boards": {
+      "easy": {
+        "columns": 4,
+        "rows": 3,
+        "gridWidth": 306,
+        "cardWidth": 74,
+        "cardHeight": 96,
+        "gridMaxWidth": "384px"
+      },
+      "intermediate": {
+        "columns": 4,
+        "rows": 4,
+        "gridWidth": 306,
+        "cardWidth": 74,
+        "cardHeight": 96,
+        "gridMaxWidth": "384px"
+      },
+      "advanced": {
+        "columns": 5,
+        "rows": 4,
+        "gridWidth": 306,
+        "cardWidth": 60,
+        "cardHeight": 77,
+        "gridMaxWidth": "416px"
+      },
+      "insane": {
+        "columns": 5,
+        "rows": 6,
+        "gridWidth": 306,
+        "cardWidth": 59,
+        "cardHeight": 77,
+        "gridMaxWidth": "min(100%, 384px)"
+      }
+    },
+    "dialogs": {
+      "difficulty-dialog": {
+        "width": 304,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "pause-dialog": {
+        "width": 304,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "complete-dialog": {
+        "width": 304,
+        "withinViewport": true,
+        "scrollsY": true
+      }
+    },
+    "intro": {
+      "boxWidth": 320,
+      "boxHeight": 568,
+      "drawnWidth": 320,
+      "drawnHeight": 213
+    },
+    "menu": {
+      "contentWidth": 280,
+      "navWidth": 280,
+      "buttonWidth": 280
+    }
+  },
+  "iphone-8": {
+    "desktopQuery": false,
+    "boards": {
+      "easy": {
+        "columns": 4,
+        "rows": 3,
+        "gridWidth": 361,
+        "cardWidth": 87,
+        "cardHeight": 113,
+        "gridMaxWidth": "384px"
+      },
+      "intermediate": {
+        "columns": 4,
+        "rows": 4,
+        "gridWidth": 361,
+        "cardWidth": 87,
+        "cardHeight": 113,
+        "gridMaxWidth": "384px"
+      },
+      "advanced": {
+        "columns": 5,
+        "rows": 4,
+        "gridWidth": 361,
+        "cardWidth": 70,
+        "cardHeight": 91,
+        "gridMaxWidth": "416px"
+      },
+      "insane": {
+        "columns": 5,
+        "rows": 6,
+        "gridWidth": 361,
+        "cardWidth": 70,
+        "cardHeight": 90,
+        "gridMaxWidth": "min(100%, 384px)"
+      }
+    },
+    "dialogs": {
+      "difficulty-dialog": {
+        "width": 359,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "pause-dialog": {
+        "width": 359,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "complete-dialog": {
+        "width": 359,
+        "withinViewport": true,
+        "scrollsY": true
+      }
+    },
+    "intro": {
+      "boxWidth": 375,
+      "boxHeight": 667,
+      "drawnWidth": 375,
+      "drawnHeight": 250
+    },
+    "menu": {
+      "contentWidth": 335,
+      "navWidth": 335,
+      "buttonWidth": 335
+    }
+  },
+  "iphone-12": {
+    "desktopQuery": false,
+    "boards": {
+      "easy": {
+        "columns": 4,
+        "rows": 3,
+        "gridWidth": 376,
+        "cardWidth": 91,
+        "cardHeight": 118,
+        "gridMaxWidth": "384px"
+      },
+      "intermediate": {
+        "columns": 4,
+        "rows": 4,
+        "gridWidth": 376,
+        "cardWidth": 91,
+        "cardHeight": 118,
+        "gridMaxWidth": "384px"
+      },
+      "advanced": {
+        "columns": 5,
+        "rows": 4,
+        "gridWidth": 376,
+        "cardWidth": 73,
+        "cardHeight": 94,
+        "gridMaxWidth": "416px"
+      },
+      "insane": {
+        "columns": 5,
+        "rows": 6,
+        "gridWidth": 376,
+        "cardWidth": 73,
+        "cardHeight": 94,
+        "gridMaxWidth": "min(100%, 384px)"
+      }
+    },
+    "dialogs": {
+      "difficulty-dialog": {
+        "width": 374,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "pause-dialog": {
+        "width": 374,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "complete-dialog": {
+        "width": 374,
+        "withinViewport": true,
+        "scrollsY": true
+      }
+    },
+    "intro": {
+      "boxWidth": 390,
+      "boxHeight": 844,
+      "drawnWidth": 390,
+      "drawnHeight": 260
+    },
+    "menu": {
+      "contentWidth": 350,
+      "navWidth": 350,
+      "buttonWidth": 350
+    }
+  },
+  "iphone-14-pro-max": {
+    "desktopQuery": false,
+    "boards": {
+      "easy": {
+        "columns": 4,
+        "rows": 3,
+        "gridWidth": 384,
+        "cardWidth": 93,
+        "cardHeight": 120,
+        "gridMaxWidth": "384px"
+      },
+      "intermediate": {
+        "columns": 4,
+        "rows": 4,
+        "gridWidth": 384,
+        "cardWidth": 93,
+        "cardHeight": 120,
+        "gridMaxWidth": "384px"
+      },
+      "advanced": {
+        "columns": 5,
+        "rows": 4,
+        "gridWidth": 416,
+        "cardWidth": 81,
+        "cardHeight": 105,
+        "gridMaxWidth": "416px"
+      },
+      "insane": {
+        "columns": 5,
+        "rows": 6,
+        "gridWidth": 384,
+        "cardWidth": 75,
+        "cardHeight": 96,
+        "gridMaxWidth": "min(100%, 384px)"
+      }
+    },
+    "dialogs": {
+      "difficulty-dialog": {
+        "width": 414,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "pause-dialog": {
+        "width": 414,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "complete-dialog": {
+        "width": 414,
+        "withinViewport": true,
+        "scrollsY": true
+      }
+    },
+    "intro": {
+      "boxWidth": 430,
+      "boxHeight": 932,
+      "drawnWidth": 430,
+      "drawnHeight": 287
+    },
+    "menu": {
+      "contentWidth": 390,
+      "navWidth": 352,
+      "buttonWidth": 352
+    }
+  },
+  "phone-landscape": {
+    "desktopQuery": false,
+    "boards": {
+      "easy": {
+        "columns": 4,
+        "rows": 3,
+        "gridWidth": 448,
+        "cardWidth": 106,
+        "cardHeight": 138,
+        "gridMaxWidth": "448px"
+      },
+      "intermediate": {
+        "columns": 4,
+        "rows": 4,
+        "gridWidth": 448,
+        "cardWidth": 106,
+        "cardHeight": 138,
+        "gridMaxWidth": "448px"
+      },
+      "advanced": {
+        "columns": 5,
+        "rows": 4,
+        "gridWidth": 496,
+        "cardWidth": 94,
+        "cardHeight": 122,
+        "gridMaxWidth": "496px"
+      },
+      "insane": {
+        "columns": 5,
+        "rows": 6,
+        "gridWidth": 448,
+        "cardWidth": 88,
+        "cardHeight": 114,
+        "gridMaxWidth": "448px"
+      }
+    },
+    "dialogs": {
+      "difficulty-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "pause-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "complete-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      }
+    },
+    "intro": {
+      "boxWidth": 844,
+      "boxHeight": 390,
+      "drawnWidth": 585,
+      "drawnHeight": 390
+    },
+    "menu": {
+      "contentWidth": 496,
+      "navWidth": 352,
+      "buttonWidth": 352
+    }
+  },
+  "tablet-portrait": {
+    "desktopQuery": false,
+    "boards": {
+      "easy": {
+        "columns": 4,
+        "rows": 3,
+        "gridWidth": 448,
+        "cardWidth": 106,
+        "cardHeight": 138,
+        "gridMaxWidth": "448px"
+      },
+      "intermediate": {
+        "columns": 4,
+        "rows": 4,
+        "gridWidth": 448,
+        "cardWidth": 106,
+        "cardHeight": 138,
+        "gridMaxWidth": "448px"
+      },
+      "advanced": {
+        "columns": 5,
+        "rows": 4,
+        "gridWidth": 496,
+        "cardWidth": 94,
+        "cardHeight": 122,
+        "gridMaxWidth": "496px"
+      },
+      "insane": {
+        "columns": 5,
+        "rows": 6,
+        "gridWidth": 448,
+        "cardWidth": 86,
+        "cardHeight": 111,
+        "gridMaxWidth": "448px"
+      }
+    },
+    "dialogs": {
+      "difficulty-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "pause-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "complete-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      }
+    },
+    "intro": {
+      "boxWidth": 768,
+      "boxHeight": 1024,
+      "drawnWidth": 768,
+      "drawnHeight": 512
+    },
+    "menu": {
+      "contentWidth": 496,
+      "navWidth": 352,
+      "buttonWidth": 352
+    }
+  },
+  "tablet-landscape": {
+    "desktopQuery": false,
+    "boards": {
+      "easy": {
+        "columns": 4,
+        "rows": 3,
+        "gridWidth": 448,
+        "cardWidth": 106,
+        "cardHeight": 138,
+        "gridMaxWidth": "448px"
+      },
+      "intermediate": {
+        "columns": 4,
+        "rows": 4,
+        "gridWidth": 448,
+        "cardWidth": 106,
+        "cardHeight": 138,
+        "gridMaxWidth": "448px"
+      },
+      "advanced": {
+        "columns": 5,
+        "rows": 4,
+        "gridWidth": 496,
+        "cardWidth": 94,
+        "cardHeight": 122,
+        "gridMaxWidth": "496px"
+      },
+      "insane": {
+        "columns": 5,
+        "rows": 6,
+        "gridWidth": 448,
+        "cardWidth": 86,
+        "cardHeight": 111,
+        "gridMaxWidth": "448px"
+      }
+    },
+    "dialogs": {
+      "difficulty-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "pause-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      },
+      "complete-dialog": {
+        "width": 480,
+        "withinViewport": true,
+        "scrollsY": true
+      }
+    },
+    "intro": {
+      "boxWidth": 1024,
+      "boxHeight": 768,
+      "drawnWidth": 1024,
+      "drawnHeight": 683
+    },
+    "menu": {
+      "contentWidth": 496,
+      "navWidth": 352,
+      "buttonWidth": 352
+    }
+  }
+}

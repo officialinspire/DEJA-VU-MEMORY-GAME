@@ -6,8 +6,12 @@
     "build": "node scripts/build-dist.mjs",
     "check:dist": "node scripts/build-dist.mjs --check",
     "dev": "node scripts/serve-dist.mjs",
-    "test": "npm run test:responsive && npm run test:release && npm run check:dist",
+    "test": "npm run test:responsive && npm run test:release && npm run check:dist && npm run test:browser",
+    "test:browser": "node scripts/verify-browser.mjs",
     "test:release": "node scripts/verify-release-candidate.mjs",
     "test:responsive": "node scripts/verify-responsive.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
   }
 }
