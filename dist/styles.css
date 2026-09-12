@@ -280,6 +280,14 @@ button:disabled {
 
 .intro-screen {
   display: grid;
+  /* Explicit minmax(0, 1fr) tracks instead of implicit auto ones. An auto row
+     is sized from its content, so the video's height: 100% became a cyclic
+     percentage: once metadata loaded, the row inflated to the clip's intrinsic
+     3:2 height (853px inside a 720px screen) and #app's overflow: hidden cut
+     the bottom off the frame. Definite tracks keep the row at the screen
+     height so object-fit letterboxes the whole frame instead. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   place-items: center;
   padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
   background: #000;
@@ -288,7 +296,16 @@ button:disabled {
 .intro-video {
   width: 100%;
   height: 100%;
+  /* min-*: 0 opts out of the automatic minimum size, which is what let the
+     aspect ratio push the track open. max-*: 100% is the belt-and-braces
+     guard: if height ever resolves as auto again, the frame is still clamped
+     to the screen and contained rather than clipped. */
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
+  object-position: center;
 }
 
 .skip-button {
