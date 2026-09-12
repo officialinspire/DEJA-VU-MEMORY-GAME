@@ -1,0 +1,5 @@
+node_modules/
+
+# Playwright artifacts, if a contributor runs it with tracing or reporters on.
+test-results/
+playwright-report/

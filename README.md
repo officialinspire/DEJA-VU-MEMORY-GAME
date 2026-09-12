@@ -16,7 +16,25 @@ npm test
 npm run dev
 ```
 
-Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, image, audio, or video asset. `npm test` runs responsive/gameplay checks, release-candidate audio/scoring/app-shell checks, and the `dist/` parity check. `npm run dev` serves the built app at `http://127.0.0.1:4173` for browser testing.
+Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, image, audio, or video asset. `npm test` runs the source-level checks (responsive/gameplay, release-candidate audio/scoring/app-shell, `dist/` parity) and then the rendered-behavior suite described below. `npm run dev` serves the built app at `http://127.0.0.1:4173` for browser testing.
+
+## Rendered-behavior tests
+
+`npm run test:browser` drives the built app in real Chromium and measures what a player would see, rather than matching source text or recomputing board maths. It serves `dist/` from a GitHub Pages-shaped subpath (`/DEJA-VU-MEMORY-GAME/`) so relative paths, manifest scope, and service-worker scope are exercised the way the hosted site uses them.
+
+It covers:
+
+- **No horizontal overflow** on any screen or dialog, checked on the document, `body`, `#app`, and the active view.
+- **Essential text and controls reachable.** Each view declares the elements a player must be able to read or press; every one must be rendered, inside the available width without horizontal scrolling, reachable by vertical scrolling, and not covered by anything else. Buttons and inputs additionally have to be hit-testable and inside the viewport once scrolled to.
+- **Views that must fit outright.** The start and intro screens have no scroll container, and on desktop the board and all three modals must fit the window without scrolling; only the long-form panels (statistics, help, settings) may scroll.
+- **Intro aspect ratio.** The `<video>` box must not exceed its screen, and the painted frame's ratio must match the encoded one — no stretching, no cover-crop.
+- **Desktop viewports** 1280x720, 1366x768, 1440x900 and 1920x1080, each at 100%, 125% and 150% browser zoom (zoom modelled as a smaller CSS viewport at a higher device pixel ratio).
+- **Mobile layout stability.** Board, menu, dialog and intro geometry on seven phone and tablet viewports is compared against `scripts/mobile-layout-baseline.json`, and the desktop-only media queries must never match on a touch device. Intentional mobile changes are recorded with `npm run test:browser -- --update-baseline`.
+- **Offline play.** After one online load and service-worker activation the network is switched off, and the suite then requires a served reload, shell-backed navigation for subpath/query/hash URLs, every asset and both music tracks fetching, byte-range requests answering 206 with correct `Content-Range` (probe, open, mid-file seek and suffix forms), audio decoding, and a complete Easy game played to the completion dialog.
+
+Narrow a run while iterating with `--suite=desktop,intro,mobile,offline`.
+
+The suite needs a Chromium build. `npx playwright install chromium` provides one; an existing binary works via `DEJA_VU_CHROMIUM=/path/to/chrome`. `DEJA_VU_SKIP_BROWSER_TESTS=1` skips it, which leaves rendered layout and offline behavior unverified — not a substitute for running it before a release.
 
 ## Offline install
 
@@ -66,5 +84,8 @@ Other behavior worth knowing:
 - `scripts/serve-dist.mjs` — dependency-free local static server with media range support
 - `scripts/verify-responsive.mjs` — dependency-free viewport, input-flow, and accessibility regression checks
 - `scripts/verify-release-candidate.mjs` — dependency-free scoring, audio, haptics, and app-shell audit
+- `scripts/verify-browser.mjs` — rendered layout, viewport-fit, and offline regression suite
+- `scripts/browser-harness.mjs` / `scripts/browser-probes.js` — Chromium discovery, subpath test server, and the in-page measurement helpers
+- `scripts/mobile-layout-baseline.json` — recorded phone and tablet geometry the suite guards
 
 Built by [INSPIRE](https://www.inspireclothing.art).
