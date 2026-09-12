@@ -273,7 +273,7 @@ function beginExperience() {
   showScreen('intro');
   introVideo.currentTime = 0;
   const playback = introVideo.play();
-  if (playback?.catch) playback.catch(showMenu);
+  if (playback?.catch) playback.catch(leaveIntro);
 }
 
 function showMenu() {
@@ -751,8 +751,16 @@ window.addEventListener('keydown', (event) => {
 });
 
 skipIntroButton.addEventListener('click', showMenu);
-introVideo.addEventListener('ended', showMenu);
-introVideo.addEventListener('error', showMenu);
+// Only leave the intro when the intro is actually on screen. The element loads
+// its metadata at page load, so an unplayable file (missing codec, failed
+// download) fires 'error' before the player has touched anything, and an
+// unguarded handler would drop them straight into the menu past the start
+// screen. Guarded, a media failure just means the intro is skipped.
+function leaveIntro() {
+  if (currentScreen === 'intro') showMenu();
+}
+introVideo.addEventListener('ended', leaveIntro);
+introVideo.addEventListener('error', leaveIntro);
 
 document.querySelector('#btn-new-game').addEventListener('click', openDifficultyDialog);
 continueButton.addEventListener('click', resumeSavedGame);
@@ -885,6 +893,29 @@ installCardFlipPolish();
 applySettings();
 updateContinueButton();
 
+// Register immediately rather than on 'load'. The worker precaches the shell,
+// so starting it while the page is still settling is what makes the very first
+// online visit offline-capable. './sw.js' resolves against the document, giving
+// the correct scope on a GitHub Pages project subpath.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+  navigator.serviceWorker.register('./sw.js').then(
+    (registration) => {
+      // Observable during development without being noisy in production.
+      if (['localhost', '127.0.0.1', '::1', ''].includes(location.hostname)) {
+        console.info('[DEJA VU] service worker registered for scope', registration.scope);
+      }
+    },
+    (error) => {
+      // Never swallowed: a failed registration means no offline play.
+      console.error('[DEJA VU] service worker registration failed:', error);
+    }
+  );
+  // The worker reports a broken precache here as well as to its own console,
+  // so an incomplete offline build is visible from the page during development.
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type !== 'DEJA_VU_PRECACHE') return;
+    const label = `[DEJA VU] precache ${event.data.reason} (${event.data.version}):`;
+    if (event.data.reason === 'install-failed') console.error(label, event.data.failures);
+    else console.warn(label, event.data.failures);
+  });
 }
