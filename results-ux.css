@@ -140,6 +140,34 @@
   }
 }
 
+/* Short desktop windows: see the matching note in styles.css. */
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 700px) {
+  .working-memory-result {
+    margin-top: 0.4rem;
+    padding: 0.6rem 0.7rem;
+  }
+
+  .complete-dialog #complete-grade {
+    font-size: clamp(1.6rem, 5vh, 2.2rem);
+  }
+
+  .completion-assessment {
+    margin-top: 0.35rem;
+  }
+
+  .completion-details {
+    margin-block: 0.6rem;
+  }
+
+  .completion-metrics {
+    gap: 0.4rem;
+  }
+
+  .completion-metrics > div {
+    padding: 0.5rem;
+  }
+}
+
 @media (max-height: 520px) {
   .working-memory-result {
     margin-top: 0.4rem;
@@ -156,5 +184,24 @@
 
   .completion-details {
     margin-block: 0.6rem;
+  }
+}
+
+/* Very short desktop windows: see the matching note in styles.css. */
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 540px) {
+  .working-memory-result {
+    padding: 0.5rem 0.6rem;
+  }
+
+  .complete-dialog #complete-grade {
+    font-size: 1.75rem;
+  }
+
+  .completion-details {
+    margin-block: 0.5rem;
+  }
+
+  .completion-metrics > div {
+    padding: 0.4rem;
   }
 }
