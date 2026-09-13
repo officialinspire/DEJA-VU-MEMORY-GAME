@@ -32,6 +32,32 @@ DEJA VU is a mobile-first card-matching and pattern-recognition game. Flip two c
 
 Open `index.html` through any static web server, or enable GitHub Pages for the repository. The app uses only relative paths and has no runtime dependencies.
 
+## Social link previews
+
+`index.html` carries Open Graph and Twitter Card tags so the GitHub Pages link
+unfurls with the banner on Facebook, LinkedIn, Reddit, X, Discord, Slack, and
+iMessage. The image is `Deja-Vu-Banner.png` (1942x809), referenced by absolute
+URL because crawlers never resolve relative paths:
+
+```
+https://officialinspire.github.io/DEJA-VU-MEMORY-GAME/Deja-Vu-Banner.png
+```
+
+If the site ever moves to a custom domain, update the absolute `og:url`,
+`og:image`, `og:image:secure_url`, `twitter:image`, and `rel="canonical"` values
+in `index.html`, then run `npm run build`. If the banner itself is replaced,
+update `og:image:width` / `og:image:height` to the new pixel dimensions.
+
+Social networks cache the first preview they scrape, so after changing these
+tags force a refresh:
+
+- Facebook — [Sharing Debugger](https://developers.facebook.com/tools/debug/) → *Scrape Again*
+- LinkedIn — [Post Inspector](https://www.linkedin.com/post-inspector/)
+- X — [Card Validator](https://cards-dev.twitter.com/validator)
+
+The image shown on the repository page itself (rather than the Pages link) is a
+separate setting: GitHub → *Settings* → *General* → *Social preview*.
+
 ## Build hosted output
 
 The root web files are the source of truth. The hosted Site serves `dist/`, which is generated and should not be edited by hand.
@@ -100,7 +126,7 @@ Other behavior worth knowing:
 
 ## Project structure
 
-- `index.html` — app screens and accessible interface
+- `index.html` — app screens, accessible interface, and social link-preview tags
 - `styles.css` — responsive design, themes, card sprite rendering, and animation
 - `index.js` — game rules, screen flow, persistence, statistics, and controls
 - `audio-manager.js` — reusable scene music, crossfades, and mobile audio unlock
@@ -114,5 +140,6 @@ Other behavior worth knowing:
 - `scripts/generate-icons.mjs` — regenerates the PWA icons from the card back in the sprite sheet
 - `scripts/browser-harness.mjs` / `scripts/browser-probes.js` — Chromium discovery, subpath test server, and the in-page measurement helpers
 - `scripts/mobile-layout-baseline.json` — recorded phone and tablet geometry the suite guards
+- `Deja-Vu-Banner.png` — Open Graph / Twitter Card image used when the site link is shared
 
 Built by [INSPIRE](https://www.inspireclothing.art).
