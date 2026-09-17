@@ -110,11 +110,10 @@ Other behavior worth knowing:
 - Working-memory board ratings: EXCELLENT 85–100%, GOOD 70–84%, AVERAGE 50–69%, and POOR 0–49%
 - Local autosave with Continue Game
 - Persistent statistics and personal bests
-- Cyber, Woodgrain, Paper, and Light themes
 - Scene-aware menu/gameplay music with smooth crossfades and persistent volume controls
 - Restrained synthesized selection, match, mistake, menu, start, and completion feedback
 - Independent, persistent SFX and best-effort haptic controls; vibration availability depends on the mobile browser
-- Persistent theme and reduced-motion controls
+- One fixed DEJA VU palette across every screen, with a persistent reduced-motion control
 - Installable PWA that plays fully offline after one online load
 - INSPIRE click-to-start and skippable intro sequence
 
@@ -127,7 +126,7 @@ Other behavior worth knowing:
 ## Project structure
 
 - `index.html` — app screens, accessible interface, and social link-preview tags
-- `styles.css` — responsive design, themes, card sprite rendering, and animation
+- `styles.css` — the single colour palette, responsive design, card sprite rendering, and animation
 - `index.js` — game rules, screen flow, persistence, statistics, and controls
 - `audio-manager.js` — reusable scene music, crossfades, and mobile audio unlock
 - `feedback-manager.js` — synthesized UI cues and guarded mobile vibration feedback

@@ -62,8 +62,6 @@ function timing(name) {
 }
 
 const DEFAULT_SETTINGS = {
-  theme: 'cyber',
-  mode: 'dark',
   music: true,
   musicVolume: 0.22,
   sfx: true,
@@ -92,7 +90,16 @@ const difficultyDialog = document.querySelector('#difficulty-dialog');
 const pauseDialog = document.querySelector('#pause-dialog');
 const completeDialog = document.querySelector('#complete-dialog');
 
-let settings = readStorage(STORAGE.settings, DEFAULT_SETTINGS);
+// Drop keys the app no longer owns (the retired theme and colour-mode
+// pickers among them) so a save written by an older build cannot carry them
+// forward, and rewrite the trimmed shape once so they leave storage too.
+const storedSettings = readStorage(STORAGE.settings, DEFAULT_SETTINGS);
+let settings = Object.fromEntries(
+  Object.keys(DEFAULT_SETTINGS).map((key) => [key, storedSettings[key]]),
+);
+if (Object.keys(storedSettings).length !== Object.keys(settings).length) {
+  writeStorage(STORAGE.settings, settings);
+}
 let statistics = readStorage(STORAGE.stats, DEFAULT_STATS);
 let game = createEmptyGame();
 let currentScreen = 'start';
@@ -667,18 +674,10 @@ function renderStatistics() {
 }
 
 function applySettings() {
-  const validTheme = ['cyber', 'woodgrain', 'paper', 'light'].includes(settings.theme) ? settings.theme : 'cyber';
-  const validMode = ['system', 'dark', 'light'].includes(settings.mode) ? settings.mode : 'dark';
-  const resolvedMode = validMode === 'system'
-    ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-    : validMode;
-  document.documentElement.dataset.theme = validTheme;
-  document.documentElement.dataset.mode = resolvedMode;
+  // DEJA VU has one palette, declared in styles.css, so there is nothing to
+  // resolve here: the only thing settings change about the look is motion.
   document.documentElement.classList.toggle('reduced-motion', Boolean(settings.reducedMotion));
-  document.querySelector('meta[name="theme-color"]').content = resolvedMode === 'dark' ? '#07111f' : '#e8edf4';
 
-  document.querySelector('#setting-theme').value = validTheme;
-  document.querySelector('#setting-mode').value = validMode;
   document.querySelector('#setting-music').checked = Boolean(settings.music);
   document.querySelector('#setting-music-volume').value = String(settings.musicVolume);
   document.querySelector('#setting-sfx').checked = Boolean(settings.sfx);
@@ -828,16 +827,6 @@ document.querySelector('#btn-reset-stats').addEventListener('click', () => {
   playFeedback('tap');
 });
 
-document.querySelector('#setting-theme').addEventListener('change', (event) => {
-  settings.theme = event.target.value;
-  saveSettings();
-  playFeedback('tap');
-});
-document.querySelector('#setting-mode').addEventListener('change', (event) => {
-  settings.mode = event.target.value;
-  saveSettings();
-  playFeedback('tap');
-});
 document.querySelector('#setting-music').addEventListener('change', (event) => {
   settings.music = event.target.checked;
   saveSettings();
@@ -865,10 +854,6 @@ document.querySelector('#setting-motion').addEventListener('change', (event) => 
   settings.reducedMotion = event.target.checked;
   saveSettings();
   playFeedback('tap');
-});
-
-matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
-  if (settings.mode === 'system') applySettings();
 });
 
 document.addEventListener('visibilitychange', () => {

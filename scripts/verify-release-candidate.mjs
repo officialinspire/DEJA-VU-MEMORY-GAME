@@ -237,7 +237,7 @@ async function verifyAppShell() {
   const shellEntries = [...shellBody.matchAll(/'([^']+)'/g)].map((match) => match[1]);
   const shellSet = new Set(shellEntries);
   assert.equal(shellEntries.length, shellSet.size, 'service-worker app shell has no duplicate entries');
-  assert.match(swSource, /const CACHE_VERSION = 'v1\.2\.0';/, 'cache version is bumped for this release');
+  assert.match(swSource, /const CACHE_VERSION = 'v1\.3\.0';/, 'cache version is bumped for this release');
   assert.match(swSource, /const CACHE_NAME = `deja-vu-\$\{CACHE_VERSION\}`;/, 'cache name is derived from CACHE_VERSION');
   assert.ok(!/cache\.addAll\(/.test(swSource), 'precache is per-asset so one failure cannot abort install');
   assert.match(swSource, /status: 206/, 'cached media answers byte-range requests offline');

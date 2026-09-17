@@ -82,7 +82,7 @@ const SCREEN_ESSENTIALS = {
   ],
   help: ['[data-back-menu]', '#help-title', '.help-copy li', '#score-explainer'],
   settings: [
-    '[data-back-menu]', '#settings-title', '#setting-theme', '#setting-mode',
+    '[data-back-menu]', '#settings-title',
     '#setting-music', '#setting-music-volume', '#setting-sfx',
     '#setting-sfx-volume', '#setting-haptics', '#setting-motion',
   ],

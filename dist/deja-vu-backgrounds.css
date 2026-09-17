@@ -1,40 +1,15 @@
 /* DEJA VU signature background system.
    Start/menu use a richer animated shape field; gameplay uses the same visual
-   language at lower contrast so cards remain the primary focus. */
-
-:root {
-  --deja-purple-950: #10051f;
-  --deja-purple-900: #18082d;
-  --deja-purple-800: #29104b;
-  --deja-purple-700: #44206c;
-  --deja-violet: #a46cff;
-  --deja-cyan: #57d6ff;
-  --deja-pink: #ff6fc8;
-  --deja-orange: #ffad55;
-  --deja-green: #65efb7;
-  --deja-yellow: #ffe36a;
-}
+   language at lower contrast so cards remain the primary focus. The palette
+   tokens these rules read (--deja-*, --deja-backdrop) live in styles.css, so
+   the app has a single source of colour truth. */
 
 .start-screen,
 .menu-screen,
 .game-screen {
-  /* These three screens intentionally keep the DEJA VU identity palette even
-     when panel/settings themes change. This prevents low-contrast text when a
-     user selects light mode while preserving theme behavior elsewhere. */
-  --text: #f8f5ff;
-  --muted: #c4b7d8;
-  --line: rgba(202, 166, 255, 0.22);
-  --surface: rgba(45, 20, 73, 0.9);
-  --surface-soft: rgba(54, 27, 86, 0.7);
-  --accent: #b98aff;
-  --accent-2: #67d9ff;
-  --accent-ink: #150625;
   color: var(--text);
   isolation: isolate;
-  background:
-    radial-gradient(circle at 18% 8%, rgba(164, 108, 255, 0.25), transparent 34%),
-    radial-gradient(circle at 86% 82%, rgba(87, 214, 255, 0.12), transparent 30%),
-    linear-gradient(145deg, var(--deja-purple-950), var(--deja-purple-800) 58%, #1a0a36);
+  background: var(--deja-backdrop);
 }
 
 .start-screen::after,
@@ -167,10 +142,14 @@
   backdrop-filter: blur(8px);
 }
 
+/* Re-stated at this specificity so the elevated menu surface above does not
+   swallow the primary button's fill and leave dark ink on a dark plate. */
 .menu-screen .menu-button-primary {
-  background: linear-gradient(120deg, #bf8cff, #6edcff);
-  color: #140523;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  color: var(--accent-ink);
 }
+
 
 @keyframes deja-shape-drift {
   0% { transform: translate3d(-7vw, -22vh, 0) rotate(var(--shape-rotate)); }
