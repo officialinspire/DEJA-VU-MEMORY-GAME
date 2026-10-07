@@ -4,8 +4,8 @@
 
 ### Installing for offline play
 
-1. Open the site once with a working connection and let it finish loading. The precache is 29 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
-2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>@/DEJA-VU-MEMORY-GAME/` cache with 29 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
+1. Open the site once with a working connection and let it finish loading. The precache is 32 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
+2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>@/DEJA-VU-MEMORY-GAME/` cache with 32 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
 3. Install the app if you want a standalone window: **Chrome/Edge desktop** — the install icon in the address bar, or ⋮ → Cast, save and share → Install. **Android Chrome** — ⋮ → Add to Home screen. **iOS Safari** — Share → Add to Home Screen (Safari has no install prompt; this is the only route).
 4. You can now go fully offline. Launching from the home screen or the installed window works with no network, as does reloading the tab.
 
@@ -83,6 +83,41 @@ All gameplay timing runs on one clock, `gameplay-clock.js`. Turn resolution (mat
 
 Music elements are unlocked one by one. A `play()` the browser refuses for want of a gesture is retried inside the next real (trusted) tap or key press. Element errors, such as a dropped connection or a decode failure, are retried three times with backoff (1 s, 2 s, 4 s), and again when the network comes back. Nothing plays while the page is hidden.
 
+## Progress tracking
+
+Durable progress for achievements, recorded from gameplay. There is no catalog or UI for it yet. It lives under its own key, `inspireDejaVu:v1:progress`, apart from the legacy statistics, which are still kept exactly as before.
+
+**Runs and sessions.** A *run* is one game from the deal to completion or abandonment. Its `runId` is saved with the game and survives saves, reloads and Continue. The `sessionId` remains per page, cleared from saves and replaced on Continue. A save from before run ids gets one when it is continued. Its match chain is only known from then on.
+
+**Events.** `index.js` reports what its rules decide; nothing is inferred from the board:
+- `deja-vu:match` when a pair resolves, and `deja-vu:mismatch` when a mistake is made. Both carry `runId`, `difficultyKey`, the cards, `moves`, `mistakes`, `matchedPairs`, `chain` and `bestChain`.
+- `deja-vu:completion` keeps its existing fields and adds `runId`, `pairs`, `moves`, `mistakes`, `perfect`, `elapsed`, `elapsedMs`, `bestMatchChain`, `finalMatchChain` (the chain the board was finished on), `completedAt` and `day` (local `YYYY-MM-DD`).
+- `deja-vu:run-abandoned` and `deja-vu:statistics-reset`.
+
+A match chain is the number of consecutive matches since the last mistake.
+
+**The record** (`progress-model.js`, versioned and validated on every read):
+- Lifetime and per-difficulty totals: wins, perfect wins, matched pairs, earned score, active play time of completed runs, best match chain, and the current and best run of consecutive perfect wins.
+- A daily win streak by the device's local calendar.
+- A ledger of the last 100 recorded run ids.
+
+A damaged field is repaired on its own. A record from a newer build is never overwritten.
+
+**The rules** (`progress-evaluator.js`, pure):
+- Only completed runs are credited, once each by `runId`; a replayed completion changes nothing.
+- Each completion is checked against the game's rules first, including its score recomputed by `runtime-config.js`'s `calculateScore`.
+- A perfect win extends the consecutive-perfect streak and an imperfect win ends it.
+- The first win on a local calendar day extends the daily streak if the previous winning day was yesterday, and starts a new one otherwise. More wins the same day count once, and a day without a win breaks it. Days are counted by calendar, so daylight-saving days and time-zone travel are handled; a win dated before the last winning day leaves the streak alone.
+- **Abandonment:** a run is abandoned only when a new game replaces it. Leaving for the menu, reloading or closing the page keeps it resumable. An abandoned run earns nothing and is added to the ledger, so it can never complete later. If it already had a mistake it ends the consecutive-perfect streak; a clean one does not, so walking away cannot protect a streak.
+- **Reset:** Reset statistics also clears every progress total and streak, but keeps the ledger, so an old event still cannot count.
+
+**Storage** (`progress-tracker.js`):
+- Every update re-reads the stored record, so another tab's progress is built on, not overwritten.
+- A record that is not a record is copied to `inspireDejaVu:v1:progress:corrupt` before being replaced.
+- If storage is unavailable, refuses writes (a full quota) or holds a newer build's record, progress is kept in memory for the session. Unsaved progress is written in full once storage accepts it again.
+
+**Migration.** On first load the record is seeded from the legacy statistics: earlier wins and perfect games count toward lifetime totals and are marked as `legacy`. Per-difficulty counts, pairs, score and time start from zero, since the old record never had them. `save-integrity.js` accepts saves with or without the new run fields and validates them when present. `stats-integrity.js` only ever rebuilds the statistics key, so it cannot touch progress.
+
 ## Asset loading
 
 The card sprite sheet is the one download play cannot start without, so it goes first and everything else waits on it:
@@ -92,7 +127,7 @@ The card sprite sheet is the one download play cannot start without, so it goes 
 - The service worker registers once the sheet has settled (10 s at most), so its 8 MB precache never shares a cold connection with it.
 - Starting a game (New Game, Play Again, Continue) waits for the art. If it is ready, as it is on every warm visit, the board starts immediately. If not, a small **Loading cards** dialog appears; after 12 s it offers **Try again** alongside waiting. If the sheet fails (missing, unreachable or undecodable) it says so, and says when the device is offline, and offers **Try again**. **Cancel** or Escape backs out to the picker, and a sheet arriving afterwards starts nothing. The board, its clock and the memorize preview start only once the art can be drawn, so no memorize time is spent looking at blank cards.
 
-The sheet ships as the original PNG. A lossless WebP of it is 28% smaller (1.44 MB) and pixel-identical, but producing it needs libwebp's `cwebp` (Chromium's own lossless encoder only reaches 1.90 MB), and the build has no way to check a derivative still matches the PNG. Lossy WebP changes pixels. So no derivative is shipped. `npm test` runs the source-level checks (responsive/gameplay, release-candidate audio/scoring/app-shell, `dist/` parity) and then the rendered-behavior suite described below. `npm run dev` serves the built app at `http://127.0.0.1:4173` for browser testing.
+The sheet ships as the original PNG. A lossless WebP of it is 28% smaller (1.44 MB) and pixel-identical, but producing it needs libwebp's `cwebp` (Chromium's own lossless encoder only reaches 1.90 MB), and the build has no way to check a derivative still matches the PNG. Lossy WebP changes pixels. So no derivative is shipped. `npm test` runs the source-level checks (responsive/gameplay, release-candidate audio/scoring/app-shell, progress, `dist/` parity) and then the rendered-behavior suite described below. `npm run dev` serves the built app at `http://127.0.0.1:4173` for browser testing.
 
 ## Rendered-behavior tests
 
@@ -121,7 +156,21 @@ It covers:
   - Restarting mid-turn or mid-preview leaves nothing behind for the old board.
 - **Service worker.** The cache is named for its scope. Requests outside the scope are not answered by the worker. An uncached track is range-served and warmed into the cache with exactly one full download for several racing range requests. Offline, the track answers every spelling of its name, and 416 for an unsatisfiable range. A new version installs and waits, survives a reload, and activates on a cold start. Activation clears this app's older and legacy caches but not another scope's.
 
-Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,loading,lifecycle`.
+- **Progress.** Real games end to end:
+  - A perfect win reports its run in full and is credited lifetime and to its difficulty, with the legacy statistics still kept; a duplicate completion event, before and after a reload, changes nothing.
+  - Continue after a reload keeps the run id and its match chains through to completion.
+  - An old save and old statistics migrate: the record is seeded, and the save gets a run id on Continue.
+  - Replacing a clean run, or one with a mistake, is handled as abandonment.
+  - Wins in America/Los_Angeles are dated by the local day, with a second win the same day, the next day and a missed day.
+  - A corrupt record is kept aside and replaced, and with storage denied entirely the game still completes and is tracked for the session.
+
+Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,loading,lifecycle,progress`.
+
+`npm run test:progress` covers the record, the evaluator and storage handling directly in Node:
+- field-by-field repair, records from newer builds, the bounded ledger, calendar days (leap days, year ends, both daylight-saving changes, other time zones) and the legacy seed;
+- every refusal reason, perfect and daily streaks, abandonment and reset;
+- reload, duplicate, corrupt, newer, denied and full storage;
+- confirmation that the two integrity guards keep progress and migrate saves.
 
 ### Checking loading by hand
 
@@ -182,6 +231,7 @@ Other behavior worth knowing:
 - `audio-manager.js` — reusable scene music, crossfades, and mobile audio unlock
 - `feedback-manager.js` — synthesized UI cues and guarded mobile vibration feedback
 - `gameplay-clock.js` — pausable gameplay time: turn and preview timers that freeze with the game, and the score clock
+- `progress-model.js` / `progress-evaluator.js` / `progress-tracker.js` — the versioned progress record, the pure rules that update it, and the event listener that stores it
 - `sprite-atlas.js` — measured card rectangles in the sprite sheet, and each card side's canvas, painted at the card's real pixel size from a bounded cache of sized crops
 - `sw.js` / `manifest.webmanifest` — offline and installable web app support
 - `scripts/build-dist.mjs` — deterministic `dist/` build and parity validation
@@ -191,6 +241,7 @@ Other behavior worth knowing:
 - `scripts/verify-browser.mjs` — rendered layout, viewport-fit, offline and service-worker, card sprite, asset loading, and gameplay lifecycle regression suite
 - `scripts/generate-icons.mjs` — regenerates the PWA icons from the card back in the sprite sheet
 - `scripts/browser-harness.mjs` / `scripts/browser-probes.js` — Chromium discovery, subpath test server, and the in-page measurement helpers
+- `scripts/verify-progress.mjs` — progress record, evaluator, storage and integrity-guard checks
 - `scripts/sprite-probes.js` / `scripts/measure-sprite-atlas.mjs` — canvas instrumentation and sprite crop checks for the browser suite, and the sprite cost meter
 - `scripts/mobile-layout-baseline.json` — recorded phone and tablet geometry the suite guards
 - `Deja-Vu-Banner.png` — Open Graph / Twitter Card image used when the site link is shared

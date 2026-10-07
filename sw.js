@@ -19,7 +19,7 @@
 // Pages project sites live on <user>.github.io), so the cache name carries
 // this worker's scope, activate only ever clears this app's own older
 // generations, and requests outside the scope are left to the network.
-const CACHE_VERSION = 'v1.5.0';
+const CACHE_VERSION = 'v1.6.0';
 const SCOPE_PATH = new URL('./', self.location).pathname;
 const CACHE_PREFIX = 'deja-vu-';
 const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}@${SCOPE_PATH}`;
@@ -32,6 +32,7 @@ const APP_SHELL = [
   './matched-card-polish.css', './gameplay-preview.css', './results-ux.css',
   './runtime-config.js', './gameplay-clock.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
   './accessibility.js', './results-ux.js', './sprite-atlas.js', './save-integrity.js',
+  './progress-model.js', './progress-evaluator.js', './progress-tracker.js',
   './stats-integrity.js', './manifest.webmanifest', './card-flip-sprite-sheet.png',
   './logo.png', './inspiresoftwareintro.mp4',
   './Deja Vu - Main Menu (Vibe 1).mp3', './Minimalist Electronic Focus Theme.mp3',

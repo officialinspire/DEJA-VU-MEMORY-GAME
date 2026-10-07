@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
+import { isRunId, localDayKey } from '../progress-model.js';
+
 const styles = fs.readFileSync('styles.css', 'utf8');
 const responsive = fs.readFileSync('responsive-board.css', 'utf8');
 const accessibility = fs.readFileSync('accessibility.js', 'utf8');
@@ -172,6 +174,7 @@ document = {
 // Fake timers with a fake clock: each timer remembers when it is due, and
 // flushing runs them in due order, moving time forward as it goes.
 const pendingTimers = new Map();
+const events = [];
 let nextTimer = 1;
 let fakeNow = 0;
 const feedback = [];
@@ -200,7 +203,8 @@ const window = {
     return id;
   },
   clearTimeout(id) { pendingTimers.delete(id); },
-  dispatchEvent() {},
+  // Details are copied out of the VM realm so deepStrictEqual compares values.
+  dispatchEvent(event) { events.push({ type: event.type, detail: JSON.parse(JSON.stringify(event.detail ?? null)) }); },
   confirm() { return true; },
 };
 
@@ -217,6 +221,8 @@ const sandbox = {
   window,
   document,
   gameplayClock: clock,
+  isRunId,
+  localDayKey,
   localStorage: {
     getItem(key) { return storage.get(key) ?? null; },
     setItem(key, value) { storage.set(key, value); },
@@ -297,6 +303,7 @@ function gameState(patterns, options = {}) {
     deck: patterns.map((pattern, index) => ({ uid: `card-${index}`, pattern, matched: Boolean(options.matched?.includes(index)) })),
     open: [], matchedPairs: options.matchedPairs || 0, moves: 0, mistakes: 0, elapsed: 0,
     paused: false, locked: false, turn: 'idle', completed: false, sessionId: 'test-session', turnId: 0,
+    runId: 'run-test-0001', chain: 0, bestChain: 0,
   };
 }
 
@@ -309,14 +316,27 @@ api.flipCard(0);
 assert.equal(api.getGame().open.length, 1, 'first card opens');
 assert.deepEqual(feedback, ['select'], 'valid card selection emits one select cue');
 api.flipCard(1);
+assert.equal(events.filter((event) => event.type === 'deja-vu:match').length, 0, 'a match is reported when it resolves, not when it is turned');
 flushTimers();
 assert.equal(api.getGame().matchedPairs, 1, 'matching pair resolves');
+const matchEvent = events.find((event) => event.type === 'deja-vu:match');
+assert.deepEqual(
+  [matchEvent?.detail.runId, matchEvent?.detail.indices, matchEvent?.detail.chain, matchEvent?.detail.matchedPairs],
+  ['run-test-0001', [0, 1], 1, 1],
+  'the core reports the match with its run and chain',
+);
 assert.equal(elements['card-grid'].cards[0].disabled, true, 'matched cards become inert');
 assert.deepEqual(feedback, ['select', 'select', 'match'], 'matching turn emits two selects and one match cue');
 
 api.flipCard(2);
 api.flipCard(3);
 assert.equal(nextGameplayDelay(), 1050, 'a mismatch stays up for the difficulty\'s study time');
+const mismatchEvent = events.find((event) => event.type === 'deja-vu:mismatch');
+assert.deepEqual(
+  [mismatchEvent?.detail.indices, mismatchEvent?.detail.mistakes, mismatchEvent?.detail.chain, api.getGame().bestChain],
+  [[2, 3], 1, 0, 1],
+  'a mistake is reported at once and ends the chain, not the best chain',
+);
 advance(400);
 api.pauseGame();
 assert.equal(clock.pendingTasks(), 1, 'pausing keeps the mismatch pending');
@@ -351,6 +371,17 @@ api.flipCard(10);
 api.flipCard(11);
 flushTimers();
 assert.equal(api.getGame().completed, true, 'last match completes the board');
+const completion = events.find((event) => event.type === 'deja-vu:completion')?.detail;
+assert.ok(completion, 'completion is reported');
+assert.equal(completion.runId, 'run-test-0001', 'completion carries the run');
+assert.equal(completion.pairs, 6);
+assert.equal(completion.mistakes, 0);
+assert.equal(completion.perfect, true);
+assert.equal(completion.bestMatchChain, 1, 'the chain counts matches made in this run');
+assert.equal(completion.finalMatchChain, 1);
+assert.equal(completion.elapsed, Math.floor(completion.elapsedMs / 1000), 'whole seconds agree with the measured time');
+assert.match(completion.day, /^\d{4}-\d{2}-\d{2}$/, 'completion is dated by the local calendar');
+assert.equal(events.filter((event) => event.type === 'deja-vu:completion').length, 1, 'completion is reported once');
 assert.equal(elements['complete-dialog'].open, true, 'completion dialog opens');
 assert.equal(elements['complete-grade'].textContent, 'EXCELLENT', 'completion rating renders');
 
@@ -374,5 +405,5 @@ assert.equal(cueCount('complete'), 1, 'completion emits one cue');
 const smallestCards = Math.min(...viewportResults.map((result) => result.cardWidth));
 const scrollingCases = viewportResults.filter((result) => result.scrolls).length;
 console.log(`Responsive matrix: PASS (${viewports.length} viewports × ${boards.length} boards; smallest card ${smallestCards}px; ${scrollingCases} vertical-scroll cases)`);
-console.log('Gameplay flow: PASS (selection, match, mismatch, difficulty study time, pause freezes pending turns, restart cancels them, completion)');
+console.log('Gameplay flow: PASS (selection, match, mismatch, difficulty study time, pause freezes pending turns, restart cancels them, completion, authoritative match/mismatch/completion events)');
 console.log('Keyboard, safe-area, dialog, orientation, and reduced-motion invariants: PASS');

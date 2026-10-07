@@ -16,6 +16,9 @@ import {
   whenCardArtReady,
 } from './sprite-atlas.js';
 import { gameplayClock } from './gameplay-clock.js';
+import { isRunId, localDayKey } from './progress-model.js';
+// Records what the events below report; loaded first so it hears them all.
+import './progress-tracker.js';
 
 const STORAGE = {
   settings: 'inspireDejaVu:v1:settings',
@@ -162,8 +165,15 @@ function installCardFlipPolish() {
   document.head.append(style);
 }
 
+// A session lives as long as this page's copy of a board; it is cleared from
+// saves and replaced on Continue. A run is the game itself, from the deal to
+// completion or abandonment: its id survives saves, reloads and Continue.
 function createSessionId() {
   return crypto.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createRunId() {
+  return crypto.randomUUID?.() || `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function createEmptyGame() {
@@ -184,7 +194,45 @@ function createEmptyGame() {
     completed: false,
     sessionId: '',
     turnId: 0,
+    runId: '',
+    // Consecutive matches since the last mistake, and the run's best.
+    chain: 0,
+    bestChain: 0,
   };
+}
+
+// Authoritative turn events for progress tracking: matches and mistakes are
+// reported here, by the rules that decided them, never read off the board.
+function emitTurnEvent(type, detail) {
+  window.dispatchEvent(new CustomEvent(type, {
+    detail: {
+      runId: game.runId,
+      difficultyKey: game.difficulty,
+      moves: game.moves,
+      mistakes: game.mistakes,
+      matchedPairs: game.matchedPairs,
+      chain: game.chain,
+      bestChain: game.bestChain,
+      ...detail,
+    },
+  }));
+}
+
+// A new game replacing an unfinished run abandons it. Leaving for the menu or
+// reloading does not: that run stays resumable with Continue.
+function abandonUnfinishedRun() {
+  const saved = readStorage(STORAGE.game, {});
+  const run = game.active && !game.completed ? game : (saved.active ? saved : null);
+  if (!run || !DIFFICULTIES[run.difficulty]) return;
+  window.dispatchEvent(new CustomEvent('deja-vu:run-abandoned', {
+    detail: {
+      runId: isRunId(run.runId) ? run.runId : null,
+      difficultyKey: run.difficulty,
+      moves: run.moves,
+      mistakes: run.mistakes,
+      matchedPairs: run.matchedPairs,
+    },
+  }));
 }
 
 // Runs in gameplay time, so a pause or a hidden page freezes it with its
@@ -457,6 +505,7 @@ function startNewGame(difficultyKey, skipConfirm = false) {
 
 function beginNewGame(difficultyKey) {
   beginGameGeneration();
+  abandonUnfinishedRun();
   const difficulty = DIFFICULTIES[difficultyKey];
   game = {
     ...createEmptyGame(),
@@ -464,6 +513,7 @@ function beginNewGame(difficultyKey) {
     difficulty: difficultyKey,
     deck: createDeck(difficulty.pairs),
     sessionId: createSessionId(),
+    runId: createRunId(),
   };
   gameplayClock.resetElapsed(0);
   statistics.played += 1;
@@ -491,6 +541,11 @@ function continueSavedGame() {
     return;
   }
   beginGameGeneration();
+  // The run continues under its own id. A save from before run ids gets one
+  // now; its match chain is only known from here on.
+  const runId = isRunId(saved.runId) ? saved.runId : createRunId();
+  const chainKnown = Number.isInteger(saved.chain) && Number.isInteger(saved.bestChain)
+    && saved.chain >= 0 && saved.chain <= saved.bestChain;
   game = {
     ...createEmptyGame(),
     ...saved,
@@ -502,6 +557,9 @@ function continueSavedGame() {
     sessionId: createSessionId(),
     turnId: 0,
     deck: saved.deck.map((card) => ({ ...card })),
+    runId,
+    chain: chainKnown ? saved.chain : 0,
+    bestChain: chainKnown ? saved.bestChain : 0,
   };
   // Saves before millisecond tracking carry whole seconds only.
   const savedMs = Number.isInteger(saved.elapsedMs) && Math.floor(saved.elapsedMs / 1000) === saved.elapsed
@@ -509,6 +567,7 @@ function continueSavedGame() {
     : saved.elapsed * 1000;
   gameplayClock.resetElapsed(savedMs);
   captureElapsed();
+  if (runId !== saved.runId) saveGame();
   renderGame();
   showScreen('game');
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
@@ -614,6 +673,11 @@ function flipCard(index) {
     scheduleGameplayTask(() => resolveMatch(firstIndex, secondIndex), timing('matchResolve'));
   } else {
     game.mistakes += 1;
+    game.chain = 0;
+    emitTurnEvent('deja-vu:mismatch', {
+      indices: [firstIndex, secondIndex],
+      patterns: [first.pattern, second.pattern],
+    });
     updateGameDisplay();
     setGameMessage('Not a match — remember both positions.', 'error');
     playFeedback('mistake');
@@ -648,7 +712,10 @@ function resolveMatch(firstIndex, secondIndex) {
   first.matched = true;
   second.matched = true;
   game.matchedPairs += 1;
+  game.chain += 1;
+  game.bestChain = Math.max(game.bestChain, game.chain);
   resetTransientTurn();
+  emitTurnEvent('deja-vu:match', { indices: [firstIndex, secondIndex], pattern: first.pattern });
 
   [firstIndex, secondIndex].forEach((index) => {
     const button = cardGrid.querySelector(`[data-index="${index}"]`);
@@ -746,6 +813,9 @@ function completeGame() {
   document.querySelector('#complete-time').textContent = formatTime(game.elapsed);
   document.querySelector('#complete-summary').textContent = `${game.moves} moves · ${game.mistakes} mistakes · ${formatTime(game.elapsed)}`;
   document.querySelector('#complete-score').textContent = score.toLocaleString();
+  // The one record of this run's result: progress tracking credits it once,
+  // by runId. Score, time and counts are the ones just used for the result.
+  const completedAt = Date.now();
   window.dispatchEvent(new CustomEvent('deja-vu:completion', {
     detail: {
       difficultyKey: game.difficulty,
@@ -753,6 +823,17 @@ function completeGame() {
       performancePercent,
       rating,
       newBests,
+      runId: game.runId,
+      pairs: difficulty.pairs,
+      moves: game.moves,
+      mistakes: game.mistakes,
+      perfect: game.mistakes === 0,
+      elapsed: game.elapsed,
+      elapsedMs: game.elapsedMs,
+      bestMatchChain: game.bestChain,
+      finalMatchChain: game.chain,
+      completedAt,
+      day: localDayKey(new Date(completedAt)),
     },
   }));
   syncSceneMusic();
@@ -978,6 +1059,8 @@ document.querySelector('#btn-reset-stats').addEventListener('click', () => {
   if (!window.confirm('Reset all DEJA VU statistics? This cannot be undone.')) return;
   statistics = { ...DEFAULT_STATS, bests: {} };
   writeStorage(STORAGE.stats, statistics);
+  // Progress totals and streaks reset with the statistics they extend.
+  window.dispatchEvent(new CustomEvent('deja-vu:statistics-reset', { detail: { at: Date.now() } }));
   renderStatistics();
   announce('Statistics reset.');
   playFeedback('tap');

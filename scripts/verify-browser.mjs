@@ -30,7 +30,7 @@ const SPRITE_PROBES_PATH = path.join(rootDirectory, 'scripts', 'sprite-probes.js
 const BASELINE_PATH = path.join(rootDirectory, 'scripts', 'mobile-layout-baseline.json');
 const UPDATE_BASELINE = process.argv.includes('--update-baseline');
 // --suite=desktop,offline narrows a run while iterating; the default is all.
-const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites', 'loading', 'lifecycle'];
+const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites', 'loading', 'lifecycle', 'progress'];
 const SUITE_FILTER = (() => {
   const flag = process.argv.find((arg) => arg.startsWith('--suite='));
   if (!flag) return new Set(ALL_SUITES);
@@ -1929,6 +1929,349 @@ async function auditWorker(runner, browser) {
   }
 }
 
+// --------------------------------------------------------------- progress ---
+
+const PROGRESS_STORE = 'inspireDejaVu:v1:progress';
+const GAME_STORE = 'inspireDejaVu:v1:activeGame';
+const STATS_STORE = 'inspireDejaVu:v1:statistics';
+
+// Records every gameplay event, and seeds storage once per tab (not again on
+// reload), with reduced motion so turns resolve quickly.
+function progressProbes({ seed, denyStorage }) {
+  window.__events = [];
+  for (const type of ['deja-vu:completion', 'deja-vu:match', 'deja-vu:mismatch', 'deja-vu:run-abandoned', 'deja-vu:progress-updated']) {
+    window.addEventListener(type, (event) => window.__events.push({ type, detail: JSON.parse(JSON.stringify(event.detail ?? null)) }));
+  }
+  if (denyStorage) {
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() { throw new DOMException('The operation is insecure.', 'SecurityError'); },
+    });
+    return;
+  }
+  if (sessionStorage.getItem('__seeded')) return;
+  sessionStorage.setItem('__seeded', '1');
+  localStorage.setItem('inspireDejaVu:v1:settings', JSON.stringify({ reducedMotion: true, music: false, sfx: false }));
+  for (const [key, value] of Object.entries(seed || {})) localStorage.setItem(key, value);
+}
+
+async function progressPage(browser, baseUrl, { seed = null, denyStorage = false, timezoneId, fixedTime } = {}) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 800 },
+    serviceWorkers: 'block',
+    ...(timezoneId ? { timezoneId } : {}),
+  });
+  await context.addInitScript(progressProbes, { seed, denyStorage });
+  await context.addInitScript({ path: PROBES_PATH });
+  const page = await context.newPage();
+  if (fixedTime) await page.clock.setFixedTime(new Date(fixedTime));
+  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
+  const errors = [];
+  page.on('pageerror', (error) => {
+    if (!/reading 'scope'/.test(String(error))) errors.push(String(error));
+  });
+  await page.goto(baseUrl, { waitUntil: 'load' });
+  await page.waitForTimeout(300);
+  return { context, page, errors };
+}
+
+const storedJson = (page, key) => page.evaluate((name) => JSON.parse(localStorage.getItem(name) || 'null'), key);
+const progressEvents = (page, type) => page.evaluate((name) => window.__events.filter((event) => event.type === name).map((event) => event.detail), type);
+
+async function cardPairs(page) {
+  return page.evaluate(() => {
+    const groups = new Map();
+    document.querySelectorAll('#card-grid .memory-card').forEach((card) => {
+      if (card.disabled) return;
+      const key = card.querySelector('.card-side-front').getAttribute('style');
+      groups.set(key, [...(groups.get(key) || []), Number(card.dataset.index)]);
+    });
+    return [...groups.values()].filter((group) => group.length === 2);
+  });
+}
+
+/** Turns two cards and waits until the core has resolved the turn. */
+async function turnPair(page, first, second) {
+  const turns = () => window.__events.filter((event) => event.type === 'deja-vu:match' || event.type === 'deja-vu:mismatch');
+  const before = await page.evaluate(`(${turns})().length`);
+  await page.evaluate(([a, b]) => {
+    document.querySelector(`#card-grid [data-index="${a}"]`).click();
+    document.querySelector(`#card-grid [data-index="${b}"]`).click();
+  }, [first, second]);
+  await page.waitForFunction(`(${turns})().length > ${before}`, null, { timeout: 5000 });
+  const outcome = await page.evaluate(`(${turns})().at(-1).type`);
+  if (outcome === 'deja-vu:mismatch') {
+    // A mismatch is reported when it is made; the turn unlocks once both
+    // cards are back down, a beat after they stop showing.
+    await page.waitForFunction(() => !document.querySelector('#card-grid .memory-card.is-flipped:not(.is-matched)'), null, { timeout: 5000 });
+    await page.waitForTimeout(600);
+  }
+}
+
+async function freshBoard(page, difficulty = 'easy') {
+  await page.evaluate(() => window.__deja.showScreen('menu'));
+  await pickDifficulty(page, difficulty);
+  await page.waitForFunction(() => !document.querySelector('#card-grid').classList.contains('is-previewing'), null, { timeout: 15000 });
+}
+
+async function finishBoard(page) {
+  for (const [first, second] of await cardPairs(page)) await turnPair(page, first, second);
+  await page.waitForFunction(() => document.querySelector('#complete-dialog').open, null, { timeout: 5000 });
+}
+
+async function continueAfterReload(page) {
+  await page.reload({ waitUntil: 'load' });
+  await page.evaluate((url) => window.__deja.useIntroFixture(url), INTRO_FIXTURE);
+  await page.click('#screen-start');
+  await page.waitForFunction(() => document.querySelector('#screen-menu').classList.contains('is-active'), null, { timeout: 10000 });
+  await page.click('#btn-continue');
+  await page.waitForFunction(() => document.querySelector('#screen-game').classList.contains('is-active'), null, { timeout: 10000 });
+}
+
+async function auditProgress(runner, browser, baseUrl) {
+  const scenario = async (label, options, body) => {
+    runner.group(`progress/${label}`);
+    const { context, page, errors } = await progressPage(browser, baseUrl, options);
+    const check = (name, fn) => runner.check(`${label} — ${name}`, fn);
+    try {
+      await body(page, check);
+      check('no page errors', () => assert.deepEqual(errors, []));
+    } catch (error) {
+      check('runs to completion', () => {
+        throw new Error(String(error?.message || error).split('\n')[0]);
+      });
+    } finally {
+      await context.close();
+    }
+  };
+
+  await scenario('completion, reload and duplicates', {}, async (page, check) => {
+    await freshBoard(page);
+    await finishBoard(page);
+    const [completion] = await progressEvents(page, 'deja-vu:completion');
+    const expectedDay = await page.evaluate(() => {
+      const now = new Date();
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    });
+    const score = await page.evaluate((detail) => window.DEJA_VU_RUNTIME.calculateScore('easy', detail.mistakes, detail.elapsed), completion);
+    check('completion reports the run in full', () => {
+      assert.match(completion.runId, /^[A-Za-z0-9-]{8,64}$/);
+      assert.deepEqual(
+        [completion.pairs, completion.moves, completion.mistakes, completion.perfect, completion.bestMatchChain, completion.finalMatchChain],
+        [6, 6, 0, true, 6, 6],
+      );
+      assert.equal(completion.elapsed, Math.floor(completion.elapsedMs / 1000));
+      assert.equal(completion.score, score, 'scored by runtime-config.js');
+      assert.equal(completion.day, expectedDay, 'dated by the local calendar');
+    });
+    const matches = await progressEvents(page, 'deja-vu:match');
+    check('each match is reported once, with its chain', () => {
+      assert.deepEqual(matches.map((match) => match.chain), [1, 2, 3, 4, 5, 6]);
+      assert.ok(matches.every((match) => match.runId === completion.runId));
+    });
+    const progress = await storedJson(page, PROGRESS_STORE);
+    check('the win is credited lifetime and to its difficulty', () => {
+      for (const totals of [progress.totals, progress.byDifficulty.easy]) {
+        assert.deepEqual(
+          [totals.wins, totals.perfectWins, totals.matchedPairs, totals.earnedScore, totals.activeTimeMs, totals.bestMatchChain, totals.perfectStreak],
+          [1, 1, 6, completion.score, completion.elapsedMs, 6, 1],
+        );
+      }
+      assert.deepEqual(progress.daily, { current: 1, best: 1, lastWinDay: expectedDay });
+      assert.deepEqual(progress.recordedRuns, [completion.runId]);
+    });
+    const stats = await storedJson(page, STATS_STORE);
+    check('legacy statistics are still kept as before', () => {
+      assert.deepEqual([stats.played, stats.won, stats.perfect], [1, 1, 1]);
+      assert.equal(stats.bests.easy.score, completion.score);
+    });
+    await page.evaluate((detail) => window.dispatchEvent(new CustomEvent('deja-vu:completion', { detail })), completion);
+    const afterDuplicate = await storedJson(page, PROGRESS_STORE);
+    check('a duplicate completion is not counted', () => assert.equal(afterDuplicate.totals.wins, 1));
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate((detail) => window.dispatchEvent(new CustomEvent('deja-vu:completion', { detail })), completion);
+    const afterReload = await storedJson(page, PROGRESS_STORE);
+    check('after a reload the record holds, and the replay is still refused', () => {
+      assert.equal(afterReload.totals.wins, 1);
+      assert.deepEqual(afterReload.recordedRuns, [completion.runId]);
+    });
+  });
+
+  await scenario('Continue keeps the run', {}, async (page, check) => {
+    await freshBoard(page);
+    const pairs = await cardPairs(page);
+    await turnPair(page, ...pairs[0]);
+    await turnPair(page, ...pairs[1]);
+    await turnPair(page, pairs[2][0], pairs[3][0]);
+    await turnPair(page, ...pairs[2]);
+    await page.click('#btn-game-menu');
+    const saved = await storedJson(page, GAME_STORE);
+    check('the save carries the run, not the session', () => {
+      assert.match(saved.runId, /^[A-Za-z0-9-]{8,64}$/);
+      assert.equal(saved.sessionId, '');
+      assert.deepEqual([saved.chain, saved.bestChain, saved.mistakes, saved.matchedPairs], [1, 2, 1, 3]);
+    });
+    await continueAfterReload(page);
+    const resumed = await storedJson(page, GAME_STORE);
+    check('Continue resumes the same run', () => assert.equal(resumed.runId, saved.runId));
+    await finishBoard(page);
+    const [completion] = await progressEvents(page, 'deja-vu:completion');
+    check('the completion belongs to the original run, chains included', () => {
+      assert.equal(completion.runId, saved.runId);
+      assert.deepEqual([completion.moves, completion.mistakes, completion.bestMatchChain, completion.finalMatchChain], [7, 1, 4, 4]);
+    });
+    const progress = await storedJson(page, PROGRESS_STORE);
+    check('recorded once, as an imperfect win', () => {
+      assert.deepEqual([progress.totals.wins, progress.totals.perfectWins, progress.totals.bestMatchChain], [1, 0, 4]);
+      assert.deepEqual(progress.recordedRuns, [saved.runId]);
+    });
+    const abandoned = await progressEvents(page, 'deja-vu:run-abandoned');
+    check('no abandonment was reported', () => assert.deepEqual(abandoned, []));
+  });
+
+  {
+    // A player upgrading mid-game: an old save with no run id or chain, and
+    // old statistics with no progress record yet.
+    const deck = [];
+    for (let pattern = 0; pattern < 6; pattern += 1) {
+      deck.push({ uid: `a${pattern}`, pattern, matched: pattern < 2 }, { uid: `b${pattern}`, pattern, matched: pattern < 2 });
+    }
+    const legacySave = {
+      version: 1, active: true, difficulty: 'easy', deck, open: [], matchedPairs: 2, moves: 3, mistakes: 1,
+      elapsed: 20, paused: false, locked: false, turn: 'idle', completed: false, sessionId: '', turnId: 0,
+    };
+    const legacyStats = { played: 3, won: 2, perfect: 1, bestScore: 5200, bests: { easy: { time: 40, mistakes: 0, score: 5200 } } };
+    await scenario('migration from an old save', {
+      seed: { [GAME_STORE]: JSON.stringify(legacySave), [STATS_STORE]: JSON.stringify(legacyStats) },
+    }, async (page, check) => {
+      const seeded = await storedJson(page, PROGRESS_STORE);
+      check('old statistics seed the record on first load', () => {
+        assert.deepEqual([seeded.totals.wins, seeded.totals.perfectWins], [2, 1]);
+        assert.deepEqual(seeded.legacy, { wins: 2, perfectWins: 1 });
+      });
+      await continueAfterReload(page);
+      const migrated = await storedJson(page, GAME_STORE);
+      check('the old save gets a run id when continued', () => {
+        assert.match(migrated.runId || '', /^[A-Za-z0-9-]{8,64}$/);
+        assert.deepEqual([migrated.chain, migrated.bestChain, migrated.elapsed], [0, 0, 20]);
+      });
+      await finishBoard(page);
+      const [completion] = await progressEvents(page, 'deja-vu:completion');
+      const progress = await storedJson(page, PROGRESS_STORE);
+      const stats = await storedJson(page, STATS_STORE);
+      check('the migrated run completes and counts once on top of the legacy wins', () => {
+        assert.equal(completion.runId, migrated.runId);
+        assert.deepEqual([completion.moves, completion.mistakes, completion.bestMatchChain], [7, 1, 4]);
+        assert.deepEqual([progress.totals.wins, progress.byDifficulty.easy.wins, progress.totals.perfectWins], [3, 1, 1]);
+        assert.equal(stats.won, 3, 'legacy statistics agree');
+      });
+    });
+  }
+
+  {
+    const streak = (() => {
+      const totals = { wins: 2, perfectWins: 2, matchedPairs: 12, earnedScore: 11000, activeTimeMs: 60000, bestMatchChain: 6, perfectStreak: 2, bestPerfectStreak: 2 };
+      const empty = { wins: 0, perfectWins: 0, matchedPairs: 0, earnedScore: 0, activeTimeMs: 0, bestMatchChain: 0, perfectStreak: 0, bestPerfectStreak: 0 };
+      return {
+        version: 1, totals, byDifficulty: { easy: { ...totals }, intermediate: { ...empty }, advanced: { ...empty }, insane: { ...empty } },
+        daily: { current: 1, best: 1, lastWinDay: '2026-03-01' }, recordedRuns: [], legacy: null, resetAt: null,
+      };
+    })();
+    await scenario('abandonment', { seed: { [PROGRESS_STORE]: JSON.stringify(streak) } }, async (page, check) => {
+      await freshBoard(page);
+      await page.click('#btn-game-menu');
+      await freshBoard(page);
+      let progress = await storedJson(page, PROGRESS_STORE);
+      let abandoned = await progressEvents(page, 'deja-vu:run-abandoned');
+      check('replacing a clean run abandons it without ending the streak', () => {
+        assert.equal(abandoned.length, 1);
+        assert.equal(abandoned[0].mistakes, 0);
+        assert.equal(progress.totals.perfectStreak, 2);
+        assert.ok(progress.recordedRuns.includes(abandoned[0].runId));
+        assert.equal(progress.totals.wins, 2, 'an abandoned run earns nothing');
+      });
+      const pairs = await cardPairs(page);
+      await turnPair(page, pairs[0][0], pairs[1][0]);
+      await page.click('#btn-game-menu');
+      await freshBoard(page);
+      progress = await storedJson(page, PROGRESS_STORE);
+      abandoned = await progressEvents(page, 'deja-vu:run-abandoned');
+      check('replacing a run that has a mistake ends the perfect streak', () => {
+        assert.equal(abandoned.length, 2);
+        assert.equal(abandoned[1].mistakes, 1);
+        assert.deepEqual(
+          [progress.totals.perfectStreak, progress.totals.bestPerfectStreak, progress.byDifficulty.easy.perfectStreak],
+          [0, 2, 0],
+        );
+      });
+    });
+  }
+
+  await scenario('local calendar days', {
+    timezoneId: 'America/Los_Angeles',
+    fixedTime: '2026-03-01T05:00:00Z',
+  }, async (page, check) => {
+    await freshBoard(page);
+    await finishBoard(page);
+    let progress = await storedJson(page, PROGRESS_STORE);
+    const [first] = await progressEvents(page, 'deja-vu:completion');
+    check('the day is the device\'s local date, not UTC', () => {
+      assert.equal(first.day, '2026-02-28');
+      assert.deepEqual(progress.daily, { current: 1, best: 1, lastWinDay: '2026-02-28' });
+    });
+    await page.clock.setFixedTime(new Date('2026-03-01T06:30:00Z'));
+    await page.click('#btn-complete-menu');
+    await freshBoard(page);
+    await finishBoard(page);
+    progress = await storedJson(page, PROGRESS_STORE);
+    check('a second win the same local day counts once toward the streak', () => {
+      assert.deepEqual(progress.daily, { current: 1, best: 1, lastWinDay: '2026-02-28' });
+      assert.equal(progress.totals.wins, 2);
+    });
+    await page.clock.setFixedTime(new Date('2026-03-01T20:00:00Z'));
+    await page.click('#btn-complete-menu');
+    await freshBoard(page);
+    await finishBoard(page);
+    progress = await storedJson(page, PROGRESS_STORE);
+    check('the next local day extends it', () => assert.deepEqual(progress.daily, { current: 2, best: 2, lastWinDay: '2026-03-01' }));
+    await page.clock.setFixedTime(new Date('2026-03-03T20:00:00Z'));
+    await page.click('#btn-complete-menu');
+    await freshBoard(page);
+    await finishBoard(page);
+    progress = await storedJson(page, PROGRESS_STORE);
+    check('a missed day breaks it', () => assert.deepEqual(progress.daily, { current: 1, best: 2, lastWinDay: '2026-03-03' }));
+  });
+
+  await scenario('corrupt progress', { seed: { [PROGRESS_STORE]: '{"version":1,"totals":{' } }, async (page, check) => {
+    const backup = await page.evaluate((key) => localStorage.getItem(`${key}:corrupt`), PROGRESS_STORE);
+    const repaired = await storedJson(page, PROGRESS_STORE);
+    check('the damaged record is kept aside and replaced on load', () => {
+      assert.equal(backup, '{"version":1,"totals":{');
+      assert.equal(repaired.version, 1);
+    });
+    await freshBoard(page);
+    await finishBoard(page);
+    const progress = await storedJson(page, PROGRESS_STORE);
+    check('and tracking carries on', () => assert.equal(progress.totals.wins, 1));
+  });
+
+  await scenario('denied storage', { denyStorage: true }, async (page, check) => {
+    await freshBoard(page);
+    await finishBoard(page);
+    const [completion] = await progressEvents(page, 'deja-vu:completion');
+    const tracked = await page.evaluate(async () => {
+      const tracker = await import('./progress-tracker.js');
+      return { progress: tracker.getProgress(), status: tracker.getProgressStatus() };
+    });
+    check('a game still completes and is tracked for the session', () => {
+      assert.ok(completion, 'no completion');
+      assert.equal(tracked.progress.totals.wins, 1);
+      assert.deepEqual(tracked.progress.recordedRuns, [completion.runId]);
+      assert.equal(tracked.status.persistent, false, 'claims to have saved progress');
+    });
+  });
+}
+
 // ------------------------------------------------------------------- main ---
 
 async function main() {
@@ -1959,6 +2302,7 @@ async function main() {
     if (SUITE_FILTER.has('sprites')) await auditSprites(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('loading')) await auditLoading(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('lifecycle')) await auditLifecycle(runner, browser, server.baseUrl);
+    if (SUITE_FILTER.has('progress')) await auditProgress(runner, browser, server.baseUrl);
   } finally {
     await browser.close();
     await server.close();
