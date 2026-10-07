@@ -83,8 +83,11 @@ It covers:
 - **Desktop viewports** 1280x720, 1366x768, 1440x900 and 1920x1080, each at 100%, 125% and 150% browser zoom (zoom modelled as a smaller CSS viewport at a higher device pixel ratio).
 - **Mobile layout stability.** Board, menu, dialog and intro geometry on seven phone and tablet viewports is compared against `scripts/mobile-layout-baseline.json`, and the desktop-only media queries must never match on a touch device. Intentional mobile changes are recorded with `npm run test:browser -- --update-baseline`.
 - **Offline play.** After one online load and service-worker activation the network is switched off, and the suite then requires a served reload, shell-backed navigation for subpath/query/hash URLs, every asset and both music tracks fetching, byte-range requests answering 206 with correct `Content-Range` (probe, open, mid-file seek and suffix forms), audio decoding, and a complete Easy game played to the completion dialog.
+- **Card sprites.** The measured rectangles in `sprite-atlas.js` are checked against the shipped PNG: each is tight around its sprite, its padded crop holds every visible pixel and overlaps no other sprite. Then every side of every board, on phones at 2x, 3x and 4x and desktop at 1x and 150%, must be painted with the dealt sprite into a bitmap the size of its card box at the device pixel ratio (capped at 3x), with nothing outside the crop or on the bitmap edge, the visible extent matching the sprite's extent in the sheet, pixels equal to a direct render of the crop, and close to the old fixed 600x775 render. Repeated new games must paint each side exactly once, resample the sheet only for crops not cached yet, release the replaced board's bitmaps immediately and never repaint on their own; resizes and pixel-ratio changes repaint at the new size; the crop cache stays bounded; and boards replaced while the sheet is still downloading are not painted when it arrives.
 
-Narrow a run while iterating with `--suite=desktop,intro,mobile,offline`.
+Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites`.
+
+`npm run measure:sprites` reports Insane-board creation time (cold and warm, Chromium's main-thread task time) and canvas memory for a phone and two desktop profiles. `--dist=<other checkout>/dist` measures another build with the same harness, `--runs=N` sets the sample count, `--cpu=4` adds CPU throttling. It runs in headless desktop Chromium: the phone profile reproduces a phone's viewport and pixel ratio, not a phone's CPU, GPU or memory.
 
 The suite needs a Chromium build. `npx playwright install chromium` provides one; an existing binary works via `DEJA_VU_CHROMIUM=/path/to/chrome`. `DEJA_VU_SKIP_BROWSER_TESTS=1` skips it, which leaves rendered layout and offline behavior unverified — not a substitute for running it before a release.
 
@@ -130,14 +133,16 @@ Other behavior worth knowing:
 - `index.js` — game rules, screen flow, persistence, statistics, and controls
 - `audio-manager.js` — reusable scene music, crossfades, and mobile audio unlock
 - `feedback-manager.js` — synthesized UI cues and guarded mobile vibration feedback
+- `sprite-atlas.js` — measured card rectangles in the sprite sheet, and each card side's canvas, painted at the card's real pixel size from a bounded cache of sized crops
 - `sw.js` / `manifest.webmanifest` — offline and installable web app support
 - `scripts/build-dist.mjs` — deterministic `dist/` build and parity validation
 - `scripts/serve-dist.mjs` — dependency-free local static server with media range support
 - `scripts/verify-responsive.mjs` — dependency-free viewport, input-flow, and accessibility regression checks
 - `scripts/verify-release-candidate.mjs` — dependency-free scoring, audio, haptics, and app-shell audit
-- `scripts/verify-browser.mjs` — rendered layout, viewport-fit, and offline regression suite
+- `scripts/verify-browser.mjs` — rendered layout, viewport-fit, offline, and card sprite regression suite
 - `scripts/generate-icons.mjs` — regenerates the PWA icons from the card back in the sprite sheet
 - `scripts/browser-harness.mjs` / `scripts/browser-probes.js` — Chromium discovery, subpath test server, and the in-page measurement helpers
+- `scripts/sprite-probes.js` / `scripts/measure-sprite-atlas.mjs` — canvas instrumentation and sprite crop checks for the browser suite, and the sprite cost meter
 - `scripts/mobile-layout-baseline.json` — recorded phone and tablet geometry the suite guards
 - `Deja-Vu-Banner.png` — Open Graph / Twitter Card image used when the site link is shared
 

@@ -16,9 +16,15 @@ export const SPRITE_ATLAS = Object.freeze({
   columns: 5,
   rows: 4,
   sourcePadding: 4,
+  // Reference card bitmap. The inset gutter and contain-fit are defined in this
+  // 600 x 775 space and scaled to each card's real pixel size, so every size
+  // keeps the same proportions. It is also the largest bitmap a side ever gets.
   renderWidth: 600,
   renderHeight: 775,
   renderInset: 8,
+  // Sides render at CSS size x devicePixelRatio, capped here: beyond 3x the
+  // bitmap outgrows the ~226 px source sprites without adding detail.
+  maxPixelRatio: 3,
   back: Object.freeze({
     col: 2,
     row: 3,
@@ -50,6 +56,16 @@ export const SPRITE_ATLAS = Object.freeze({
   ]),
 });
 
+const CANVAS_CLASS = 'sprite-cell-canvas';
+// A resized card keeps its current bitmap (the browser scales it) until the
+// size stops changing, so dragging a window edge does not repaint every frame.
+const RESIZE_SETTLE_MS = 150;
+// Sized crops are shared by every side showing the same sprite at the same
+// pixel size. One board needs at most 16 (15 faces + the back); the bounds
+// leave room for all four board sizes and the help demo at 3x.
+const CROP_CACHE_MAX_ENTRIES = 64;
+const CROP_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+
 const faceByKey = new Map(
   SPRITE_ATLAS.playableFaces.map((sprite) => [`${sprite.col}:${sprite.row}`, sprite])
 );
@@ -57,8 +73,20 @@ const faceByKey = new Map(
 const atlasImage = new Image();
 atlasImage.decoding = 'async';
 atlasImage.src = SPRITE_ATLAS.image;
-let atlasReady = atlasImage.complete && atlasImage.naturalWidth > 0;
-const pendingSides = new Map();
+let atlasReady = false;
+
+// side -> { sprite, canvas, cssWidth, cssHeight, painted }. Holds every side
+// that is waiting for the atlas, waiting for a size, or painted; entries leave
+// as soon as their side is detached, so a replaced board is never retained.
+const trackedSides = new Map();
+const cropCache = new Map();
+let cropCacheBytes = 0;
+const resizedSides = new Set();
+let resizeTimer = 0;
+
+const grid = document.querySelector('#card-grid');
+const gridObserver = grid ? new MutationObserver(onGridMutations) : null;
+const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(onSideResize) : null;
 
 function percentForCell(index, count) {
   return count <= 1 ? 0 : (index / (count - 1)) * 100;
@@ -94,66 +122,190 @@ function scaledSourceRect(sprite) {
   };
 }
 
-function canvasForSide(side) {
-  let canvas = side.querySelector('.sprite-cell-canvas');
-  if (!canvas) {
-    canvas = document.createElement('canvas');
-    canvas.className = 'sprite-cell-canvas';
-    canvas.setAttribute('aria-hidden', 'true');
-    side.append(canvas);
-  }
-  return canvas;
+// Device pixels for a side of this CSS size: capped DPR, and never larger than
+// the reference bitmap.
+function outputSize(cssWidth, cssHeight) {
+  const ratio = Math.min(window.devicePixelRatio || 1, SPRITE_ATLAS.maxPixelRatio);
+  const scale = Math.min(ratio, SPRITE_ATLAS.renderWidth / cssWidth, SPRITE_ATLAS.renderHeight / cssHeight);
+  return {
+    width: Math.max(1, Math.round(cssWidth * scale)),
+    height: Math.max(1, Math.round(cssHeight * scale)),
+  };
 }
 
-function paintSide(side, sprite) {
-  if (!side || !sprite?.rect) return;
-
-  side.dataset.spriteCol = String(sprite.col);
-  side.dataset.spriteRow = String(sprite.row);
-  side.dataset.spriteName = sprite.name;
-  side.style.backgroundImage = 'none';
-  side.style.backgroundPosition = '';
-
-  if (!atlasReady) {
-    pendingSides.set(side, sprite);
-    return;
-  }
-
+function drawSprite(context, sprite, width, height) {
   const { sx, sy, sw, sh } = scaledSourceRect(sprite);
-  const canvas = canvasForSide(side);
-  const outputWidth = SPRITE_ATLAS.renderWidth;
-  const outputHeight = SPRITE_ATLAS.renderHeight;
-
-  if (canvas.width !== outputWidth) canvas.width = outputWidth;
-  if (canvas.height !== outputHeight) canvas.height = outputHeight;
-
-  const context = canvas.getContext('2d', { alpha: true });
-  if (!context) return;
-
-  context.clearRect(0, 0, outputWidth, outputHeight);
+  context.clearRect(0, 0, width, height);
   context.imageSmoothingEnabled = true;
   if ('imageSmoothingQuality' in context) context.imageSmoothingQuality = 'high';
 
-  // Contain the COMPLETE measured card rectangle in one fixed card-aspect
-  // bitmap. This preserves the source sprite's proportions, keeps its outer
+  // Contain the COMPLETE measured card rectangle in one card-aspect bitmap.
+  // This preserves the source sprite's proportions, keeps its outer
   // shadow/border visible, and never samples the neighboring flip frames.
+  // The layout is the one the fixed reference bitmap has always used, mapped
+  // onto this bitmap without re-rounding, so the card sits exactly where the
+  // browser used to show it.
   const inset = SPRITE_ATLAS.renderInset;
-  const availableWidth = outputWidth - inset * 2;
-  const availableHeight = outputHeight - inset * 2;
-  const scale = Math.min(availableWidth / sw, availableHeight / sh);
+  const referenceWidth = SPRITE_ATLAS.renderWidth;
+  const referenceHeight = SPRITE_ATLAS.renderHeight;
+  const scale = Math.min((referenceWidth - inset * 2) / sw, (referenceHeight - inset * 2) / sh);
   const drawWidth = Math.max(1, Math.round(sw * scale));
   const drawHeight = Math.max(1, Math.round(sh * scale));
-  const dx = Math.round((outputWidth - drawWidth) / 2);
-  const dy = Math.round((outputHeight - drawHeight) / 2);
+  const dx = Math.round((referenceWidth - drawWidth) / 2);
+  const dy = Math.round((referenceHeight - drawHeight) / 2);
+  const toX = width / referenceWidth;
+  const toY = height / referenceHeight;
 
   context.drawImage(
     atlasImage,
     sx, sy, sw, sh,
-    dx, dy, drawWidth, drawHeight
+    dx * toX, dy * toY, drawWidth * toX, drawHeight * toY
   );
+}
 
-  side.dataset.spritePainted = `${sprite.col}:${sprite.row}`;
-  pendingSides.delete(side);
+function releaseCanvas(canvas) {
+  // Zero-size frees the backing store now instead of whenever GC runs.
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
+function cachedCrop(sprite, width, height) {
+  const key = `${sprite.col}:${sprite.row}@${width}x${height}`;
+  const cached = cropCache.get(key);
+  if (cached) {
+    cropCache.delete(key);
+    cropCache.set(key, cached);
+    return cached;
+  }
+
+  const crop = document.createElement('canvas');
+  crop.width = width;
+  crop.height = height;
+  const context = crop.getContext('2d', { alpha: true });
+  if (!context) return null;
+  drawSprite(context, sprite, width, height);
+
+  cropCache.set(key, crop);
+  cropCacheBytes += width * height * 4;
+  for (const [oldestKey, oldest] of cropCache) {
+    if (cropCache.size <= CROP_CACHE_MAX_ENTRIES && cropCacheBytes <= CROP_CACHE_MAX_BYTES) break;
+    if (oldestKey === key) break;
+    cropCacheBytes -= oldest.width * oldest.height * 4;
+    cropCache.delete(oldestKey);
+    releaseCanvas(oldest);
+  }
+  return crop;
+}
+
+function paintSide(side, state) {
+  if (!atlasReady || !state.canvas || !state.cssWidth || !state.cssHeight) return;
+  const { width, height } = outputSize(state.cssWidth, state.cssHeight);
+  const painted = `${state.sprite.col}:${state.sprite.row}@${width}x${height}`;
+  if (state.painted === painted) return;
+
+  const crop = cachedCrop(state.sprite, width, height);
+  const canvas = state.canvas;
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  const context = canvas.getContext('2d', { alpha: true });
+  if (!crop || !context) return;
+
+  context.clearRect(0, 0, width, height);
+  context.drawImage(crop, 0, 0);
+  state.painted = painted;
+  side.dataset.spritePainted = `${state.sprite.col}:${state.sprite.row}`;
+}
+
+function setDataIfChanged(element, name, value) {
+  if (element.dataset[name] !== value) element.dataset[name] = value;
+}
+
+// Registers a side and paints it once its size is known. A side already
+// showing this sprite in its canvas is left alone.
+function trackSide(side, sprite) {
+  if (!side || !sprite?.rect) return;
+
+  let state = trackedSides.get(side);
+  if (state && state.sprite === sprite && state.canvas?.parentNode === side) return;
+  if (!state) {
+    state = { sprite, canvas: null, cssWidth: 0, cssHeight: 0, painted: '' };
+    trackedSides.set(side, state);
+    side.style.backgroundImage = 'none';
+    side.style.backgroundPosition = '';
+    if (resizeObserver) {
+      resizeObserver.observe(side);
+    } else {
+      state.cssWidth = SPRITE_ATLAS.renderWidth;
+      state.cssHeight = SPRITE_ATLAS.renderHeight;
+    }
+  }
+
+  state.sprite = sprite;
+  state.painted = '';
+  setDataIfChanged(side, 'spriteCol', String(sprite.col));
+  setDataIfChanged(side, 'spriteRow', String(sprite.row));
+  setDataIfChanged(side, 'spriteName', sprite.name);
+
+  if (state.canvas?.parentNode !== side) {
+    // Inserted here rather than at paint time, so painting never mutates the
+    // DOM and wakes the grid's other observers. No backing store until sized.
+    state.canvas = side.querySelector(`.${CANVAS_CLASS}`);
+    if (!state.canvas) {
+      state.canvas = document.createElement('canvas');
+      state.canvas.className = CANVAS_CLASS;
+      state.canvas.setAttribute('aria-hidden', 'true');
+      side.append(state.canvas);
+    }
+  }
+  paintSide(side, state);
+}
+
+function onSideResize(entries) {
+  for (const entry of entries) {
+    const state = trackedSides.get(entry.target);
+    if (!state) continue;
+    // contentRect ignores transforms, so a mid-flip card reports its real size.
+    state.cssWidth = entry.contentRect.width;
+    state.cssHeight = entry.contentRect.height;
+    if (state.painted) scheduleRepaint(entry.target);
+    else paintSide(entry.target, state);
+  }
+}
+
+function scheduleRepaint(side) {
+  resizedSides.add(side);
+  window.clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => {
+    resizeTimer = 0;
+    resizedSides.forEach((resized) => {
+      const state = trackedSides.get(resized);
+      if (state) paintSide(resized, state);
+    });
+    resizedSides.clear();
+  }, RESIZE_SETTLE_MS);
+}
+
+// A DPR change without a CSS size change (moving a window to another display)
+// never reaches the ResizeObserver, so it repaints everything itself.
+function watchPixelRatio() {
+  const query = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+  if (!query?.addEventListener) return;
+  query.addEventListener('change', () => {
+    trackedSides.forEach((state, side) => {
+      if (state.painted) scheduleRepaint(side);
+    });
+    watchPixelRatio();
+  }, { once: true });
+}
+
+function releaseDetachedSides() {
+  trackedSides.forEach((state, side) => {
+    if (side.isConnected) return;
+    resizeObserver?.unobserve(side);
+    if (state.canvas) releaseCanvas(state.canvas);
+    resizedSides.delete(side);
+    trackedSides.delete(side);
+  });
 }
 
 function normalizeFront(front) {
@@ -171,37 +323,54 @@ function normalizeFront(front) {
 
   // Preserve compatibility variables for the existing render/debug path. They
   // no longer control the actual crop; measured rectangles above do.
-  front.style.setProperty('--sprite-x', `${percentForCell(sprite.col, SPRITE_ATLAS.columns)}%`);
-  front.style.setProperty('--sprite-y', `${percentForCell(sprite.row, SPRITE_ATLAS.rows)}%`);
-  paintSide(front, sprite);
+  const spriteX = `${percentForCell(sprite.col, SPRITE_ATLAS.columns)}%`;
+  const spriteY = `${percentForCell(sprite.row, SPRITE_ATLAS.rows)}%`;
+  if (front.style.getPropertyValue('--sprite-x') !== spriteX) front.style.setProperty('--sprite-x', spriteX);
+  if (front.style.getPropertyValue('--sprite-y') !== spriteY) front.style.setProperty('--sprite-y', spriteY);
+  trackSide(front, sprite);
 }
 
 function normalizeCard(card) {
   const front = card.querySelector('.card-side-front');
   const back = card.querySelector('.card-side-back');
   if (front) normalizeFront(front);
-  if (back) paintSide(back, SPRITE_ATLAS.back);
+  if (back) trackSide(back, SPRITE_ATLAS.back);
 }
 
-function validateCards(root = document) {
-  root.querySelectorAll?.('.memory-card').forEach(normalizeCard);
+// Only cards that were added, or whose contents or face attributes changed,
+// are revisited; flips and other card state never reach the sprite code.
+function onGridMutations(records) {
+  const cards = new Set();
+  let removed = false;
+  for (const record of records) {
+    if (record.type === 'attributes') {
+      const card = record.target.closest?.('.memory-card');
+      if (card) cards.add(card);
+      continue;
+    }
+    if (record.removedNodes.length) removed = true;
+    record.addedNodes.forEach((node) => {
+      if (node.nodeType !== Node.ELEMENT_NODE || node.classList.contains(CANVAS_CLASS)) return;
+      const card = node.closest('.memory-card');
+      if (card) cards.add(card);
+      else node.querySelectorAll('.memory-card').forEach((inner) => cards.add(inner));
+    });
+  }
+
+  if (removed) releaseDetachedSides();
+  cards.forEach((card) => {
+    if (card.isConnected) normalizeCard(card);
+  });
+  // Drop the records this callback just caused (canvas insertion, face data
+  // attributes) so it never re-runs on its own output.
+  gridObserver.takeRecords();
 }
 
-function paintStaticDemo() {
+function trackStaticDemo() {
   const demoBack = document.querySelector('.sprite-demo .sprite-back');
   const demoFace = document.querySelector('.sprite-demo .sprite-symbol');
-  if (demoBack) paintSide(demoBack, SPRITE_ATLAS.back);
-  if (demoFace) paintSide(demoFace, SPRITE_ATLAS.playableFaces[8]);
-}
-
-function flushPendingSides() {
-  [...pendingSides.entries()].forEach(([side, sprite]) => {
-    if (!side.isConnected) {
-      pendingSides.delete(side);
-      return;
-    }
-    paintSide(side, sprite);
-  });
+  if (demoBack) trackSide(demoBack, SPRITE_ATLAS.back);
+  if (demoFace) trackSide(demoFace, SPRITE_ATLAS.playableFaces[8]);
 }
 
 function validateSourceSheet() {
@@ -217,12 +386,18 @@ function validateSourceSheet() {
   }
 }
 
-atlasImage.addEventListener('load', () => {
-  atlasReady = atlasImage.naturalWidth > 0;
+function onAtlasReady() {
+  if (atlasReady || !(atlasImage.naturalWidth > 0)) return;
+  atlasReady = true;
   validateSourceSheet();
-  flushPendingSides();
-  validateCards();
-  paintStaticDemo();
+  trackedSides.forEach((state, side) => paintSide(side, state));
+}
+
+atlasImage.addEventListener('load', () => {
+  // Decode off the main thread up front, so the first board's crops do not
+  // stall on decoding the whole sheet.
+  const decoded = atlasImage.decode ? atlasImage.decode().catch(() => {}) : Promise.resolve();
+  decoded.then(onAtlasReady);
 }, { once: true });
 
 atlasImage.addEventListener('error', () => {
@@ -260,13 +435,14 @@ function installAtlasStyles() {
 }
 
 installAtlasStyles();
-validateSourceSheet();
-validateCards();
-paintStaticDemo();
-
-const grid = document.querySelector('#card-grid');
-if (grid) {
-  new MutationObserver(() => validateCards(grid)).observe(grid, { childList: true, subtree: true });
-}
+grid?.querySelectorAll('.memory-card').forEach(normalizeCard);
+trackStaticDemo();
+watchPixelRatio();
+gridObserver?.observe(grid, {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ['data-sprite-col', 'data-sprite-row'],
+});
 
 window.DEJA_VU_SPRITE_ATLAS = SPRITE_ATLAS;

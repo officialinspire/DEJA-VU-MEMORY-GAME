@@ -4,8 +4,9 @@
 // drives the built app in a real browser and measures what a player would
 // actually see: nothing overflowing sideways, every essential control reachable
 // without horizontal scrolling, the short-viewport screens fitting without
-// clipping, the intro keeping its aspect ratio, phone layout not drifting, and
-// a full game playable with the network switched off.
+// clipping, the intro keeping its aspect ratio, phone layout not drifting, a
+// full game playable with the network switched off, and every card side
+// painted with the right, complete sprite at its real pixel size.
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -21,10 +22,11 @@ import {
 } from './browser-harness.mjs';
 
 const PROBES_PATH = path.join(rootDirectory, 'scripts', 'browser-probes.js');
+const SPRITE_PROBES_PATH = path.join(rootDirectory, 'scripts', 'sprite-probes.js');
 const BASELINE_PATH = path.join(rootDirectory, 'scripts', 'mobile-layout-baseline.json');
 const UPDATE_BASELINE = process.argv.includes('--update-baseline');
 // --suite=desktop,offline narrows a run while iterating; the default is all.
-const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline'];
+const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites'];
 const SUITE_FILTER = (() => {
   const flag = process.argv.find((arg) => arg.startsWith('--suite='));
   if (!flag) return new Set(ALL_SUITES);
@@ -633,6 +635,297 @@ async function auditOffline(runner, browser, baseUrl) {
   await context.close();
 }
 
+// ---------------------------------------------------------------- sprites ---
+
+// Phones at 2x, 3x and past the 3x cap, desktop at 1x and 150% zoom: the
+// bitmap has to follow the card's real pixel size on each.
+const SPRITE_PROFILES = [
+  { name: 'phone 390x844@3x', viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+  { name: 'phone 320x568@2x', viewport: { width: 320, height: 568 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
+  { name: 'phone 412x915@4x', viewport: { width: 412, height: 915 }, deviceScaleFactor: 4, isMobile: true, hasTouch: true },
+  { name: 'desktop 1440x900@1x', viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 },
+  { name: 'desktop 1280x720@150%', viewport: { width: 853, height: 480 }, deviceScaleFactor: 1.5 },
+];
+// Room for resampling to move a threshold edge by a pixel or so. A cut border
+// or a neighbouring frame is several pixels on the larger bitmaps, and the
+// atlas checks pin the rectangles themselves at full source resolution.
+const SPRITE_EDGE_TOLERANCE = 2;
+// Mean premultiplied difference from the old fixed 600x775 bitmap scaled down,
+// out of 255. Measured at up to ~5.5 for one resample instead of two; a moved
+// or missing inset, a different crop or the wrong sprite is far above it.
+const SPRITE_LEGACY_TOLERANCE = 8;
+
+async function spritePage(browser, baseUrl, profile, { atlasDelayMs = 0 } = {}) {
+  const context = await browser.newContext({
+    viewport: profile.viewport,
+    deviceScaleFactor: profile.deviceScaleFactor,
+    isMobile: !!profile.isMobile,
+    hasTouch: !!profile.hasTouch,
+    // page.route() cannot see requests a service worker answers.
+    serviceWorkers: 'block',
+  });
+  await context.addInitScript({ path: SPRITE_PROBES_PATH });
+  await context.addInitScript({ path: PROBES_PATH });
+  const page = await context.newPage();
+  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
+  const errors = [];
+  // Blocking the worker is this suite's choice, not an app error: Playwright
+  // logs it and resolves register() without a registration.
+  const blockedWorker = /Service Worker registration blocked|reading 'scope'/;
+  page.on('pageerror', (error) => {
+    if (!blockedWorker.test(String(error))) errors.push(String(error));
+  });
+  page.on('console', (message) => {
+    if (message.type() === 'error' && !blockedWorker.test(message.text())) errors.push(message.text());
+  });
+  if (atlasDelayMs) {
+    await page.route('**/card-flip-sprite-sheet.png', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, atlasDelayMs));
+      await route.continue();
+    });
+  }
+  await page.goto(baseUrl, { waitUntil: atlasDelayMs ? 'domcontentloaded' : 'load' });
+  if (!atlasDelayMs) await page.waitForTimeout(300);
+  await page.evaluate(() => window.__deja.showScreen('menu'));
+  return { context, page, errors };
+}
+
+/** Waits past the resize settle delay so any repaint has happened. */
+async function spritesSettled(page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.waitForTimeout(250);
+}
+
+function sideLabel(side) {
+  return `side ${side.index} (${side.side}, ${side.sprite})`;
+}
+
+function assertBoardSprites(runner, label, sides, cardCount) {
+  runner.check(`${label} — every card has both sides`, () => {
+    assert.equal(sides.length, cardCount * 2, `${sides.length} sides for ${cardCount} cards`);
+  });
+  // Pixel checks run on the sides that have pixels; the first and last
+  // checks report the ones that do not.
+  const inspected = sides.filter((side) => side.vsDirect);
+  const none = (name, list, predicate, describe) => runner.check(`${label} — ${name}`, () => {
+    const failed = list.filter(predicate).map((side) => `${sideLabel(side)}: ${describe(side)}`);
+    assert.deepEqual(failed.slice(0, 6), [], `${failed.length} of ${list.length} sides failed`);
+  });
+
+  none('one canvas per side, painted with the dealt sprite', sides,
+    (side) => side.canvasCount !== 1 || !side.width || side.paintedAs !== side.expectedKey,
+    (side) => `${side.canvasCount} canvases, ${side.width}x${side.height}, painted "${side.paintedAs}", dealt "${side.expectedKey}"`);
+  none('bitmap matches the card box at the capped pixel ratio', sides,
+    (side) => Math.abs(side.width - side.expectedWidth) > 1 || Math.abs(side.height - side.expectedHeight) > 1
+      || side.width > 600 || side.height > 775,
+    (side) => `${side.width}x${side.height}, expected ${side.expectedWidth}x${side.expectedHeight} for ${side.cssWidth.toFixed(1)}x${side.cssHeight.toFixed(1)} CSS px`);
+  none('nothing painted outside the padded crop or on the bitmap edge', inspected,
+    (side) => side.outsideAlpha > 0 || side.edgeAlpha > 0,
+    (side) => `alpha ${side.outsideAlpha} outside the crop, ${side.edgeAlpha} on the edge`);
+  none('visible extent matches the sprite in the sheet (complete border, no neighbour)', inspected,
+    (side) => !side.drawn || !side.expected || ['left', 'top', 'right', 'bottom'].some(
+      (edge) => Math.abs(side.drawn[edge] - side.expected[edge]) > SPRITE_EDGE_TOLERANCE,
+    ),
+    (side) => `drawn ${JSON.stringify(side.drawn)}, expected ${JSON.stringify(side.expected && Object.fromEntries(
+      Object.entries(side.expected).map(([key, value]) => [key, Number(value.toFixed(1))]),
+    ))}`);
+  none('pixels equal a direct render of the measured crop', inspected,
+    (side) => side.vsDirect.mean > 0.5,
+    (side) => `mean difference ${side.vsDirect.mean.toFixed(2)}, max ${side.vsDirect.max}`);
+  none('pixels stay close to the old fixed-size render', inspected,
+    (side) => side.vsLegacy.mean > SPRITE_LEGACY_TOLERANCE,
+    (side) => `mean difference ${side.vsLegacy.mean.toFixed(2)} from the 600x775 render`);
+  runner.check(`${label} — every side inspected`, () => {
+    assert.equal(inspected.length, sides.length, `${sides.length - inspected.length} sides had no bitmap to inspect`);
+  });
+}
+
+async function auditSprites(runner, browser, baseUrl) {
+  // The measured rectangles themselves, against the PNG that ships.
+  runner.group('sprites/atlas');
+  {
+    const { context, page } = await spritePage(browser, baseUrl, SPRITE_PROFILES[3]);
+    const contract = await page.evaluate(() => window.__sprites.atlasContract());
+    runner.check('atlas — 17 faces and the back are measured', () => {
+      assert.equal(contract.length, 18, `${contract.length} measured sprites`);
+    });
+    for (const sprite of contract) {
+      runner.check(`atlas — ${sprite.name} crop is complete and its own`, () => {
+        assert.ok(sprite.insideSheet, `${sprite.name} rectangle leaves the sheet`);
+        assert.ok(sprite.maxAlphaOutsideCrop <= 2, `${sprite.name} has alpha ${sprite.maxAlphaOutsideCrop} just outside its padded crop: the crop cuts the sprite`);
+        assert.deepEqual(sprite.overlaps, [], `${sprite.name} crop overlaps ${sprite.overlaps.join(', ')}`);
+        assert.ok(
+          sprite.slack && Object.values(sprite.slack).every((gap) => gap <= 1),
+          `${sprite.name} rectangle has empty space inside its edges ${JSON.stringify(sprite.slack)}: it no longer fits the art`,
+        );
+      });
+    }
+    await context.close();
+  }
+
+  // Crop accuracy on every board, at every pixel ratio.
+  for (const profile of SPRITE_PROFILES) {
+    runner.group(`sprites/${profile.name}`);
+    const { context, page, errors } = await spritePage(browser, baseUrl, profile);
+    for (const difficulty of DIFFICULTIES) {
+      await startBoard(page, difficulty);
+      await spritesSettled(page);
+      const cardCount = await page.evaluate(() => document.querySelectorAll('#card-grid .memory-card').length);
+      const sides = await page.evaluate(() => window.__sprites.inspectBoard());
+      assertBoardSprites(runner, `${profile.name} ${difficulty}`, sides, cardCount);
+    }
+    await page.evaluate(() => window.__deja.showScreen('help'));
+    await spritesSettled(page);
+    const demo = await page.evaluate(() => [...document.querySelectorAll('.sprite-demo .sprite-card')].map((side) => ({
+      painted: side.dataset.spritePainted || '',
+      width: side.querySelector('canvas')?.width || 0,
+      expected: Math.round(Number.parseFloat(getComputedStyle(side).width) * Math.min(devicePixelRatio, 3)),
+    })));
+    runner.check(`${profile.name} — help demo painted at its own size`, () => {
+      assert.deepEqual(demo.map((side) => side.painted), ['2:3', '3:1'], 'help demo shows the wrong sprites');
+      demo.forEach((side) => assert.ok(Math.abs(side.width - side.expected) <= 1, `demo bitmap ${side.width} px wide, expected ${side.expected}`));
+    });
+    const reported = [...errors, ...await page.evaluate(() => window.__sprites.errors())];
+    runner.check(`${profile.name} — no errors`, () => assert.deepEqual(reported, []));
+    await context.close();
+  }
+
+  // Repeated new games: each side painted once, crops reused, old boards
+  // released straight away, nothing repainting on its own afterwards.
+  for (const profile of [SPRITE_PROFILES[0], SPRITE_PROFILES[3]]) {
+    const label = `${profile.name} repeated games`;
+    runner.group(`sprites/${label}`);
+    const { context, page, errors } = await spritePage(browser, baseUrl, profile);
+    const cached = new Set();
+    const sequence = ['insane', 'insane', 'insane', 'insane', 'insane', 'easy', 'intermediate', 'advanced', 'insane', 'easy', 'insane'];
+    for (const [round, difficulty] of sequence.entries()) {
+      await page.evaluate(() => {
+        window.__previousBoard = [...document.querySelectorAll('#card-grid canvas')];
+        window.__sprites.takeCounts();
+      });
+      await startBoard(page, difficulty);
+      await spritesSettled(page);
+      const sides = await page.evaluate(() => window.__sprites.inspectBoard());
+      const counts = await page.evaluate(() => window.__sprites.takeCounts());
+      const previous = await page.evaluate(() => window.__previousBoard
+        .filter((canvas) => canvas.isConnected || canvas.width || canvas.height).length);
+      const fresh = new Set(sides.map((side) => `${side.expectedKey}@${side.width}x${side.height}`).filter((key) => !cached.has(key)));
+      fresh.forEach((key) => cached.add(key));
+      const step = `${label} #${round + 1} ${difficulty}`;
+
+      runner.check(`${step} — each side painted exactly once`, () => {
+        assert.equal(counts.canvasDraws, sides.length, `${counts.canvasDraws} side paints for ${sides.length} sides`);
+      });
+      runner.check(`${step} — sheet resampled only for crops not cached yet`, () => {
+        assert.equal(counts.atlasDraws, fresh.size, `${counts.atlasDraws} sheet draws, ${fresh.size} new sprite sizes`);
+      });
+      runner.check(`${step} — previous board's bitmaps released`, () => {
+        assert.equal(previous, 0, `${previous} canvases from the replaced board still hold a bitmap or stay attached`);
+      });
+      runner.check(`${step} — board painted correctly`, () => {
+        const wrong = sides.filter((side) => !side.width || side.paintedAs !== side.expectedKey);
+        assert.equal(wrong.length, 0, `${wrong.length} sides unpainted or showing the wrong sprite`);
+      });
+
+      // Card state changes the way play makes them must not reach the sprite code.
+      await page.evaluate(() => {
+        document.querySelectorAll('#card-grid .memory-card').forEach((card, index) => {
+          card.classList.toggle('is-flipped');
+          card.setAttribute('aria-label', `probe ${index}`);
+          card.setAttribute('aria-pressed', 'true');
+        });
+      });
+      await spritesSettled(page);
+      const idle = await page.evaluate(() => window.__sprites.takeCounts());
+      runner.check(`${step} — no repaint afterwards (no observer feedback)`, () => {
+        assert.deepEqual(idle, { atlasDraws: 0, canvasDraws: 0 }, 'sprites repainted with nothing changed');
+      });
+    }
+    const memory = await page.evaluate(() => window.__sprites.canvases());
+    runner.check(`${label} — off-page canvas memory stays within the crop cache bound`, () => {
+      assert.ok(memory.detached <= 64, `${memory.detached} off-page canvases hold bitmaps`);
+      assert.ok(memory.detachedBytes <= 16 * 1024 * 1024, `${(memory.detachedBytes / 1048576).toFixed(1)} MB off-page`);
+    });
+    runner.check(`${label} — only the board and nothing else on the page holds bitmaps`, () => {
+      assert.ok(memory.attached <= 60, `${memory.attached} attached canvases hold bitmaps after ${sequence.length} boards`);
+    });
+    const reported = [...errors, ...await page.evaluate(() => window.__sprites.errors())];
+    runner.check(`${label} — no errors`, () => assert.deepEqual(reported, []));
+    await context.close();
+  }
+
+  // Resizes and pixel-ratio changes repaint at the new size once settled, and
+  // the crop cache stays bounded however many sizes go through it.
+  {
+    const profile = SPRITE_PROFILES[3];
+    const label = 'desktop resize';
+    runner.group(`sprites/${label}`);
+    const { context, page, errors } = await spritePage(browser, baseUrl, profile);
+    await startBoard(page, 'insane');
+    await spritesSettled(page);
+    for (const viewport of [{ width: 1280, height: 720 }, { width: 1920, height: 1080 }, { width: 1024, height: 768 }, { width: 1366, height: 768 }]) {
+      await page.evaluate(() => window.__sprites.takeCounts());
+      await page.setViewportSize(viewport);
+      await spritesSettled(page);
+      const sides = await page.evaluate(() => window.__sprites.inspectBoard());
+      assertBoardSprites(runner, `${label} to ${viewport.width}x${viewport.height}`, sides, 30);
+      const counts = await page.evaluate(() => window.__sprites.takeCounts());
+      runner.check(`${label} to ${viewport.width}x${viewport.height} — each side repainted at most once`, () => {
+        assert.ok(counts.canvasDraws <= sides.length, `${counts.canvasDraws} side paints for ${sides.length} sides`);
+      });
+    }
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 2, mobile: false });
+    await spritesSettled(page);
+    assertBoardSprites(runner, `${label} to 2x pixel ratio`, await page.evaluate(() => window.__sprites.inspectBoard()), 30);
+    for (const difficulty of DIFFICULTIES) {
+      for (const viewport of [{ width: 1280, height: 720 }, { width: 1600, height: 900 }]) {
+        await page.setViewportSize(viewport);
+        await startBoard(page, difficulty);
+      }
+    }
+    await spritesSettled(page);
+    const memory = await page.evaluate(() => window.__sprites.canvases());
+    runner.check(`${label} — crop cache bounded across many sizes`, () => {
+      assert.ok(memory.detached <= 64, `${memory.detached} off-page canvases hold bitmaps`);
+      assert.ok(memory.detachedBytes <= 16 * 1024 * 1024, `${(memory.detachedBytes / 1048576).toFixed(1)} MB off-page`);
+    });
+    const reported = [...errors, ...await page.evaluate(() => window.__sprites.errors())];
+    runner.check(`${label} — no errors`, () => assert.deepEqual(reported, []));
+    await context.close();
+  }
+
+  // Boards replaced while the sheet is still downloading leave nothing behind:
+  // only the board on screen gets painted once it arrives.
+  {
+    const label = 'slow sheet';
+    runner.group(`sprites/${label}`);
+    const { context, page, errors } = await spritePage(browser, baseUrl, SPRITE_PROFILES[0], { atlasDelayMs: 2500 });
+    for (const difficulty of ['insane', 'easy', 'advanced', 'insane']) await startBoard(page, difficulty);
+    const early = await page.evaluate(() => ({ counts: window.__sprites.takeCounts(), canvases: window.__sprites.canvases() }));
+    runner.check(`${label} — nothing painted before the sheet arrives`, () => {
+      assert.equal(early.counts.atlasDraws + early.counts.canvasDraws, 0, 'sides painted without the sheet');
+      assert.equal(early.canvases.attached + early.canvases.detached, 0, 'bitmaps allocated before the sheet arrived');
+    });
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('#card-grid .card-side')].every((side) => side.dataset.spritePainted),
+      null,
+      { timeout: 15000 },
+    );
+    await spritesSettled(page);
+    const counts = await page.evaluate(() => window.__sprites.takeCounts());
+    const memory = await page.evaluate(() => window.__sprites.canvases());
+    runner.check(`${label} — only the current board is painted`, () => {
+      assert.equal(counts.canvasDraws, 60, `${counts.canvasDraws} side paints; replaced boards were still pending`);
+      assert.equal(memory.attached, 60, `${memory.attached} attached bitmaps`);
+    });
+    assertBoardSprites(runner, label, await page.evaluate(() => window.__sprites.inspectBoard()), 30);
+    const reported = [...errors, ...await page.evaluate(() => window.__sprites.errors())];
+    runner.check(`${label} — no errors`, () => assert.deepEqual(reported, []));
+    await context.close();
+  }
+}
+
 // ------------------------------------------------------------------- main ---
 
 async function main() {
@@ -657,6 +950,7 @@ async function main() {
     if (SUITE_FILTER.has('intro')) await auditIntroAspectRatio(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('mobile')) await auditMobile(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('offline')) await auditOffline(runner, browser, server.baseUrl);
+    if (SUITE_FILTER.has('sprites')) await auditSprites(runner, browser, server.baseUrl);
   } finally {
     await browser.close();
     await server.close();
