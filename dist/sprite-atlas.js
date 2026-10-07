@@ -70,10 +70,11 @@ const faceByKey = new Map(
   SPRITE_ATLAS.playableFaces.map((sprite) => [`${sprite.col}:${sprite.row}`, sprite])
 );
 
-const atlasImage = new Image();
-atlasImage.decoding = 'async';
-atlasImage.src = SPRITE_ATLAS.image;
+// The sheet is loaded and decoded once for the whole app. Gameplay waits on
+// cardArt (see whenCardArtReady) rather than starting a board it cannot draw.
+let atlasImage = null;
 let atlasReady = false;
+const cardArt = { state: 'loading', attempt: 0, promise: null, image: null };
 
 // side -> { sprite, canvas, cssWidth, cssHeight, painted }. Holds every side
 // that is waiting for the atlas, waiting for a size, or painted; entries leave
@@ -386,23 +387,99 @@ function validateSourceSheet() {
   }
 }
 
-function onAtlasReady() {
-  if (atlasReady || !(atlasImage.naturalWidth > 0)) return;
+// A decoded sheet must actually hold the art: the middle of the card back is
+// solid, so a transparent pixel there means a truncated or wrong file.
+function sheetHasPixels(image) {
+  const probe = document.createElement('canvas');
+  probe.width = 1;
+  probe.height = 1;
+  try {
+    const context = probe.getContext('2d');
+    const { x, y, w, h } = SPRITE_ATLAS.back.rect;
+    const sx = Math.floor((x + w / 2) * (image.naturalWidth / SPRITE_ATLAS.sourceWidth));
+    const sy = Math.floor((y + h / 2) * (image.naturalHeight / SPRITE_ATLAS.sourceHeight));
+    context.drawImage(image, sx, sy, 1, 1, 0, 0, 1, 1);
+    return context.getImageData(0, 0, 1, 1).data[3] > 0;
+  } catch (_) {
+    return false;
+  } finally {
+    releaseCanvas(probe);
+  }
+}
+
+function loadSheet(image, attempt) {
+  return new Promise((resolve, reject) => {
+    image.addEventListener('load', resolve, { once: true });
+    image.addEventListener('error', () => reject(new Error('the card sprite sheet failed to load')), { once: true });
+    // A retry asks again under a new URL, so a failed response the browser
+    // still holds is not handed back. The worker ignores the query string.
+    image.src = attempt > 1 ? `${SPRITE_ATLAS.image}?attempt=${attempt}` : SPRITE_ATLAS.image;
+    // An already-cached sheet can be complete before any event fires; the
+    // promise settles once either way.
+    if (image.complete && image.naturalWidth > 0) resolve();
+  })
+    // Decode off the main thread up front, so the first board's crops do not
+    // stall on decoding the whole sheet. Some engines reject decode() for an
+    // image that is in fact usable, so the pixel check below is the judge.
+    .then(() => (image.decode ? image.decode().catch(() => {}) : undefined))
+    .then(() => {
+      if (!(image.naturalWidth > 0 && image.naturalHeight > 0) || !sheetHasPixels(image)) {
+        throw new Error('the card sprite sheet did not decode');
+      }
+      return image;
+    });
+}
+
+function requestCardArt() {
+  cardArt.attempt += 1;
+  const attempt = cardArt.attempt;
+  cardArt.state = 'loading';
+  // Abandon a slower earlier attempt rather than download the sheet twice.
+  if (cardArt.image) cardArt.image.src = '';
+  const image = new Image();
+  image.decoding = 'async';
+  cardArt.image = image;
+  cardArt.promise = loadSheet(image, attempt).then(
+    (image) => {
+      if (attempt !== cardArt.attempt) return cardArt.promise;
+      cardArt.state = 'ready';
+      onAtlasReady(image);
+      return image;
+    },
+    (error) => {
+      if (attempt !== cardArt.attempt) return cardArt.promise;
+      cardArt.state = 'failed';
+      console.error(`[DEJA VU] ${error.message}.`);
+      throw error;
+    },
+  );
+  // Callers that only watch state must not surface an unhandled rejection.
+  cardArt.promise.catch(() => {});
+  return cardArt.promise;
+}
+
+function onAtlasReady(image) {
+  if (atlasReady) return;
+  atlasImage = image;
   atlasReady = true;
   validateSourceSheet();
   trackedSides.forEach((state, side) => paintSide(side, state));
 }
 
-atlasImage.addEventListener('load', () => {
-  // Decode off the main thread up front, so the first board's crops do not
-  // stall on decoding the whole sheet.
-  const decoded = atlasImage.decode ? atlasImage.decode().catch(() => {}) : Promise.resolve();
-  decoded.then(onAtlasReady);
-}, { once: true });
+/** 'loading', 'ready' or 'failed'. */
+export function cardArtState() {
+  return cardArt.state;
+}
 
-atlasImage.addEventListener('error', () => {
-  console.error('[DEJA VU] Card sprite sheet failed to load.');
-}, { once: true });
+/** Settles with the current attempt to load and decode the card art. */
+export function whenCardArtReady() {
+  return cardArt.promise;
+}
+
+/** Starts a fresh attempt unless the art is already ready. */
+export function retryCardArt() {
+  return cardArt.state === 'ready' ? cardArt.promise : requestCardArt();
+}
 
 function installAtlasStyles() {
   if (document.querySelector('#deja-vu-sprite-atlas-contract')) return;
@@ -434,6 +511,7 @@ function installAtlasStyles() {
   document.head.append(style);
 }
 
+requestCardArt();
 installAtlasStyles();
 grid?.querySelectorAll('.memory-card').forEach(normalizeCard);
 trackStaticDemo();

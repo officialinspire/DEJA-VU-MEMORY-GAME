@@ -3,12 +3,18 @@ import {
   configureMusic,
   transitionMusic,
   unlockMusic,
+  warmMusic,
 } from './audio-manager.js';
 import {
   configureFeedback,
   playFeedback,
   unlockFeedback,
 } from './feedback-manager.js';
+import {
+  cardArtState,
+  retryCardArt,
+  whenCardArtReady,
+} from './sprite-atlas.js';
 
 const STORAGE = {
   settings: 'inspireDejaVu:v1:settings',
@@ -89,6 +95,10 @@ const liveStatus = document.querySelector('#live-status');
 const difficultyDialog = document.querySelector('#difficulty-dialog');
 const pauseDialog = document.querySelector('#pause-dialog');
 const completeDialog = document.querySelector('#complete-dialog');
+const artDialog = document.querySelector('#art-dialog');
+const artTitle = document.querySelector('#art-title');
+const artMessage = document.querySelector('#art-message');
+const artRetryButton = document.querySelector('#btn-art-retry');
 
 // Drop keys the app no longer owns (the retired theme and colour-mode
 // pickers among them) so a save written by an older build cannot carry them
@@ -332,10 +342,100 @@ function createDeck(pairCount) {
   return shuffle(pairs);
 }
 
+// A board only ever starts once its card art can be drawn. On a cold cache
+// over a slow connection, or when the sheet fails, the start waits behind a
+// small dialog that can retry or cancel; the game, its clock and the memorize
+// preview do not begin until the art is ready.
+const ART_SLOW_MS = 12000;
+const ART_STATUS = Object.freeze({
+  loading: Object.freeze({
+    title: 'Loading cards',
+    message: 'Getting the card artwork ready…',
+    retry: false,
+  }),
+  slow: Object.freeze({
+    title: 'Still loading',
+    message: 'The card artwork is taking longer than usual. Keep waiting, or try again.',
+    retry: true,
+  }),
+  failed: Object.freeze({
+    title: 'Cards didn’t load',
+    message: 'The card artwork could not be loaded. Check your connection and try again.',
+    retry: true,
+  }),
+});
+let artWait = null;
+
+function showArtStatus(kind) {
+  const status = ART_STATUS[kind];
+  artDialog.dataset.state = kind;
+  artTitle.textContent = status.title;
+  artMessage.textContent = kind === 'failed' && navigator.onLine === false
+    ? 'You’re offline, and the card artwork isn’t saved on this device yet. Reconnect and try again.'
+    : status.message;
+  artRetryButton.hidden = !status.retry;
+  if (!artDialog.open) artDialog.showModal();
+  (status.retry ? artRetryButton : artDialog.querySelector('.dialog-cancel')).focus();
+}
+
+function followCardArt(wait) {
+  window.clearTimeout(wait.slowTimer);
+  wait.slowTimer = window.setTimeout(() => {
+    if (artWait === wait) showArtStatus('slow');
+  }, ART_SLOW_MS);
+  whenCardArtReady().then(() => {
+    if (artWait !== wait) return;
+    window.clearTimeout(wait.slowTimer);
+    artWait = null;
+    if (artDialog.open) artDialog.close();
+    wait.start();
+  }, () => {
+    if (artWait !== wait) return;
+    window.clearTimeout(wait.slowTimer);
+    showArtStatus('failed');
+  });
+}
+
+function cancelArtWait() {
+  if (!artWait) return;
+  window.clearTimeout(artWait.slowTimer);
+  artWait = null;
+  if (artDialog.open) artDialog.close();
+}
+
+// The newest start wins; one already waiting is replaced, never run late.
+function whenCardArtIsReady(start) {
+  cancelArtWait();
+  if (cardArtState() === 'ready') {
+    start();
+    return;
+  }
+  const wait = { start, slowTimer: 0 };
+  artWait = wait;
+  if (cardArtState() === 'failed') {
+    showArtStatus('failed');
+    return;
+  }
+  showArtStatus('loading');
+  followCardArt(wait);
+}
+
+function retryArtWait() {
+  if (!artWait) return;
+  playFeedback('tap');
+  retryCardArt();
+  showArtStatus('loading');
+  followCardArt(artWait);
+}
+
 function startNewGame(difficultyKey, skipConfirm = false) {
   if (!DIFFICULTIES[difficultyKey]) return;
   if (!skipConfirm && game.active && !window.confirm('Start a new game? Your current board will be replaced.')) return;
+  // The current board stays intact until the new one can actually be drawn.
+  whenCardArtIsReady(() => beginNewGame(difficultyKey));
+}
 
+function beginNewGame(difficultyKey) {
   beginGameGeneration();
   const difficulty = DIFFICULTIES[difficultyKey];
   game = {
@@ -356,6 +456,14 @@ function startNewGame(difficultyKey, skipConfirm = false) {
 }
 
 function resumeSavedGame() {
+  if (!hasValidSavedGame()) {
+    updateContinueButton();
+    return;
+  }
+  whenCardArtIsReady(continueSavedGame);
+}
+
+function continueSavedGame() {
   const saved = readStorage(STORAGE.game, {});
   if (!saved.active || !DIFFICULTIES[saved.difficulty] || !Array.isArray(saved.deck)) {
     updateContinueButton();
@@ -726,7 +834,7 @@ function handleGridKeys(event) {
 }
 
 function handleMenuKeys(event) {
-  if (currentScreen !== 'menu' || difficultyDialog.open) return;
+  if (currentScreen !== 'menu' || difficultyDialog.open || artDialog.open) return;
   if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
   const buttons = [...document.querySelectorAll('.menu-nav button:not(:disabled)')];
   const currentIndex = buttons.indexOf(document.activeElement);
@@ -786,6 +894,16 @@ document.querySelectorAll('[data-back-menu]').forEach((button) => button.addEven
 difficultyDialog.querySelectorAll('[data-difficulty]').forEach((button) => button.addEventListener('click', () => {
   startNewGame(button.dataset.difficulty);
 }));
+
+artRetryButton.addEventListener('click', retryArtWait);
+artDialog.querySelector('.dialog-cancel').addEventListener('click', () => {
+  playFeedback('tap');
+  cancelArtWait();
+});
+artDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  cancelArtWait();
+});
 
 document.querySelector('#btn-game-menu').addEventListener('click', () => {
   saveGame();
@@ -878,12 +996,30 @@ installCardFlipPolish();
 applySettings();
 updateContinueButton();
 
-// Register immediately rather than on 'load'. The worker precaches the shell,
-// so starting it while the page is still settling is what makes the very first
-// online visit offline-capable. './sw.js' resolves against the document, giving
-// the correct scope on a GitHub Pages project subpath.
+// Card art first. The sheet is the one download play cannot start without, so
+// the music and the worker's precache (the whole shell, music and video
+// included) wait until it has settled instead of sharing a cold connection
+// with it. The worker then revalidates the sheet rather than fetching it
+// again. A stalled sheet only delays them, never cancels them.
+const ART_PRIORITY_CAP_MS = 10000;
+function afterCardArtSettles(callback) {
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    callback();
+  };
+  whenCardArtReady().then(run, run);
+  window.setTimeout(run, ART_PRIORITY_CAP_MS);
+}
+
+afterCardArtSettles(warmMusic);
+
+// './sw.js' resolves against the document, giving the correct scope on a
+// GitHub Pages project subpath. The first online visit still becomes
+// offline-capable during that visit: the worker claims the page on activate.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('./sw.js').then(
+  afterCardArtSettles(() => navigator.serviceWorker.register('./sw.js').then(
     (registration) => {
       // Observable during development without being noisy in production.
       if (['localhost', '127.0.0.1', '::1', ''].includes(location.hostname)) {
@@ -894,7 +1030,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       // Never swallowed: a failed registration means no offline play.
       console.error('[DEJA VU] service worker registration failed:', error);
     }
-  );
+  ));
   // The worker reports a broken precache here as well as to its own console,
   // so an incomplete offline build is visible from the page during development.
   navigator.serviceWorker.addEventListener('message', (event) => {

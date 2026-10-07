@@ -9,10 +9,13 @@ const TRACK_SOURCES = Object.freeze({
   gameplay: new URL('./Minimalist Electronic Focus Theme.mp3', import.meta.url).href,
 });
 
+// Nothing is downloaded until warmMusic() or the first gesture's unlock: the
+// card art goes first on a cold connection. play() inside the gesture loads a
+// preload="none" track just as well, so the unlock is unaffected.
 const tracks = Object.fromEntries(Object.entries(TRACK_SOURCES).map(([name, source]) => {
   const audio = new Audio(source);
   audio.loop = true;
-  audio.preload = 'auto';
+  audio.preload = 'none';
   audio.volume = 0;
   return [name, audio];
 }));
@@ -157,6 +160,16 @@ export function unlockMusic() {
       unlockPromise = null;
     });
   return unlockPromise;
+}
+
+// Starts buffering both loops. A track the unlock already asked to play is
+// loading anyway; load() on it would abort that play().
+export function warmMusic() {
+  Object.values(tracks).forEach((audio) => {
+    if (audio.preload === 'auto') return;
+    audio.preload = 'auto';
+    if (audio.paused && !audio.readyState) audio.load();
+  });
 }
 
 export function getMusicState() {

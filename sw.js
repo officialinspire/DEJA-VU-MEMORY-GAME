@@ -13,7 +13,7 @@
 // old and new assets. A new worker precaches into a new cache and then waits:
 // it activates on the next cold start, once no page is controlled by the old
 // worker. Reloading a tab does not hand over, by design.
-const CACHE_VERSION = 'v1.3.1';
+const CACHE_VERSION = 'v1.4.0';
 const CACHE_NAME = `deja-vu-${CACHE_VERSION}`;
 const CACHE_PREFIX = 'deja-vu-';
 
@@ -28,13 +28,15 @@ const APP_SHELL = [
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
 ];
 
-// Media and artwork are precached like everything else, but one failing entry
-// must not abort the install and strand the app on the previous version. These
-// are re-fetched and cached on demand the next time they are requested, and the
-// game stays playable without them: audio play() rejections are swallowed by the
-// music manager and the intro video falls through to the menu on error.
+// Media and decorative artwork are precached like everything else, but one
+// failing entry must not abort the install and strand the app on the previous
+// version. These are re-fetched and cached on demand the next time they are
+// requested, and the game stays playable without them: audio play() rejections
+// are swallowed by the music manager and the intro video falls through to the
+// menu on error. The card sprite sheet is NOT here: without it no board can be
+// drawn, so a worker that activated without it would promise offline play it
+// cannot deliver. Its failure fails the install, and the next load retries.
 const OPTIONAL_ASSETS = new Set([
-  './card-flip-sprite-sheet.png',
   './logo.png',
   './inspiresoftwareintro.mp4',
   './Deja Vu - Main Menu (Vibe 1).mp3',
@@ -134,11 +136,13 @@ async function precache() {
 
   // Individually, not addAll(): addAll rejects as a unit, so one 404 would
   // discard every asset that did download.
-  await Promise.all(APP_SHELL.map(async (path) => {
+  const store = (paths) => Promise.all(paths.map(async (path) => {
     try {
-      // cache: 'reload' bypasses the HTTP cache so a new worker generation
-      // never precaches a stale copy of an asset the browser already holds.
-      const response = await fetch(toAbsolute(path), { cache: 'reload' });
+      // cache: 'no-cache' revalidates every entry with the server, so a new
+      // worker generation never precaches a stale copy of an asset the browser
+      // already holds, while one the page just downloaded comes back as a 304
+      // instead of a second download.
+      const response = await fetch(toAbsolute(path), { cache: 'no-cache' });
       if (!response || !response.ok) throw new Error(`HTTP ${response ? response.status : 'no response'}`);
       await cache.put(toAbsolute(path), response);
     } catch (error) {
@@ -146,7 +150,11 @@ async function precache() {
     }
   }));
 
+  // What play needs first; the music and video only once that is secured, so
+  // they never hold up an install that is going to fail anyway.
+  await store(APP_SHELL.filter((path) => !OPTIONAL_ASSETS.has(path)));
   const required = failures.filter((failure) => !OPTIONAL_ASSETS.has(failure.path));
+  if (!required.length) await store(APP_SHELL.filter((path) => OPTIONAL_ASSETS.has(path)));
   if (required.length) {
     await report({ type: 'DEJA_VU_PRECACHE', reason: 'install-failed', version: CACHE_VERSION, failures });
     if (!preexisting) await caches.delete(CACHE_NAME);

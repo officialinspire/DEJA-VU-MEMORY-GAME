@@ -108,7 +108,9 @@
   window.__deja = {
     /** The element that owns the current view: an open dialog, else the active screen. */
     activeContainer() {
-      const dialog = Array.from(document.querySelectorAll('dialog')).find((node) => node.open);
+      // The last open dialog is the one on top when one opens over another,
+      // e.g. the card-art dialog over the difficulty picker.
+      const dialog = Array.from(document.querySelectorAll('dialog')).reverse().find((node) => node.open);
       return dialog || document.querySelector('.screen.is-active');
     },
 

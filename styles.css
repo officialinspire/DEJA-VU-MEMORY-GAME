@@ -872,6 +872,36 @@ button:disabled {
   margin-bottom: 1.4rem;
 }
 
+.art-dialog h2 {
+  margin-bottom: 0.8rem;
+}
+
+.art-message {
+  margin: 0 0 1.1rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.art-spinner {
+  display: block;
+  width: 2.4rem;
+  height: 2.4rem;
+  margin: 0 auto 1rem;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: art-spin 900ms linear infinite;
+}
+
+.art-dialog[data-state="failed"] .art-spinner {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  animation: none;
+}
+
+@keyframes art-spin {
+  to { transform: rotate(360deg); }
+}
+
 .completion-mark {
   display: grid;
   width: 4rem;

@@ -8,13 +8,17 @@
 // full game playable with the network switched off, and every card side
 // painted with the right, complete sprite at its real pixel size.
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import {
+  cp, mkdtemp, readFile, rm, writeFile,
+} from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { chromium } from 'playwright';
 
 import {
   createRunner,
+  distDirectory,
   missingBrowserMessage,
   resolveChromium,
   rootDirectory,
@@ -26,7 +30,7 @@ const SPRITE_PROBES_PATH = path.join(rootDirectory, 'scripts', 'sprite-probes.js
 const BASELINE_PATH = path.join(rootDirectory, 'scripts', 'mobile-layout-baseline.json');
 const UPDATE_BASELINE = process.argv.includes('--update-baseline');
 // --suite=desktop,offline narrows a run while iterating; the default is all.
-const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites'];
+const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites', 'loading'];
 const SUITE_FILTER = (() => {
   const flag = process.argv.find((arg) => arg.startsWith('--suite='));
   if (!flag) return new Set(ALL_SUITES);
@@ -96,6 +100,7 @@ const DIALOG_ESSENTIALS = {
     '[data-difficulty="advanced"]', '[data-difficulty="insane"]', '.dialog-cancel',
   ],
   'pause-dialog': ['h2', '#btn-resume', '#btn-pause-menu'],
+  'art-dialog': ['#art-title', '#art-message', '.dialog-cancel'],
   'complete-dialog': [
     '#complete-grade', '#complete-performance', '#complete-difficulty',
     '#complete-moves', '#complete-mistakes', '#complete-time', '#complete-score',
@@ -248,6 +253,10 @@ async function auditDesktop(runner, browser, baseUrl) {
 
       await page.evaluate(() => window.__deja.openDialog('complete-dialog'));
       await auditView(runner, page, `${label} complete dialog`, DIALOG_ESSENTIALS['complete-dialog'], DESKTOP_MUST_FIT);
+      await page.evaluate(() => window.__deja.closeDialogs());
+
+      await page.evaluate(() => window.__deja.openDialog('art-dialog'));
+      await auditView(runner, page, `${label} card-art dialog`, DIALOG_ESSENTIALS['art-dialog'], DESKTOP_MUST_FIT);
       await page.evaluate(() => window.__deja.closeDialogs());
 
       for (const screen of ['statistics', 'help', 'settings']) {
@@ -583,6 +592,16 @@ async function auditOffline(runner, browser, baseUrl) {
   // Finally: a whole game, start to completion dialog, with no network.
   await page.evaluate(() => window.__deja.showScreen('menu'));
   await startBoard(page, 'easy');
+  const offlineBoard = await page.evaluate(() => ({
+    artDialog: document.querySelector('#art-dialog').open,
+    sides: document.querySelectorAll('#card-grid .card-side').length,
+    painted: [...document.querySelectorAll('#card-grid .card-side')]
+      .filter((side) => side.dataset.spritePainted && side.querySelector('canvas')?.width > 0).length,
+  }));
+  runner.check('offline board shows its card art', () => {
+    assert.equal(offlineBoard.artDialog, false, 'the card-art dialog opened offline');
+    assert.equal(offlineBoard.painted, offlineBoard.sides, `${offlineBoard.painted} of ${offlineBoard.sides} sides painted offline`);
+  });
   await page.waitForFunction(
     () => !document.querySelector('#card-grid').classList.contains('is-previewing'),
     null,
@@ -895,13 +914,37 @@ async function auditSprites(runner, browser, baseUrl) {
     await context.close();
   }
 
-  // Boards replaced while the sheet is still downloading leave nothing behind:
-  // only the board on screen gets painted once it arrives.
+  // Cards replaced while the sheet is still downloading leave nothing behind:
+  // only the board on screen gets painted once it arrives. Play itself cannot
+  // start a board before the art (the loading suite covers that), so these
+  // stale boards are rendered straight into the grid the way index.js does.
   {
     const label = 'slow sheet';
     runner.group(`sprites/${label}`);
     const { context, page, errors } = await spritePage(browser, baseUrl, SPRITE_PROFILES[0], { atlasDelayMs: 2500 });
-    for (const difficulty of ['insane', 'easy', 'advanced', 'insane']) await startBoard(page, difficulty);
+    await page.evaluate(() => window.__deja.showScreen('game'));
+    for (let board = 0; board < 4; board += 1) {
+      await page.evaluate((offset) => {
+        const grid = document.querySelector('#card-grid');
+        grid.style.setProperty('--cols', '5');
+        grid.setAttribute('aria-rowcount', '6');
+        grid.setAttribute('aria-colcount', '5');
+        grid.replaceChildren(...Array.from({ length: 30 }, (_, index) => {
+          const face = (index + offset) % 15;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'memory-card';
+          button.innerHTML = `
+            <span class="memory-card-inner" aria-hidden="true">
+              <span class="card-side card-side-back"></span>
+              <span class="card-side card-side-front" style="--sprite-x:${(face % 5) * 25}%;--sprite-y:${Math.floor(face / 5) * 33.333333}%"></span>
+            </span>`;
+          return button;
+        }));
+      }, board);
+      // Let each board be laid out and sized, as a real one would be.
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    }
     const early = await page.evaluate(() => ({ counts: window.__sprites.takeCounts(), canvases: window.__sprites.canvases() }));
     runner.check(`${label} — nothing painted before the sheet arrives`, () => {
       assert.equal(early.counts.atlasDraws + early.counts.canvasDraws, 0, 'sides painted without the sheet');
@@ -923,6 +966,455 @@ async function auditSprites(runner, browser, baseUrl) {
     const reported = [...errors, ...await page.evaluate(() => window.__sprites.errors())];
     runner.check(`${label} — no errors`, () => assert.deepEqual(reported, []));
     await context.close();
+  }
+}
+
+// ---------------------------------------------------------------- loading ---
+
+const SHEET_FILE = 'card-flip-sprite-sheet.png';
+// A valid PNG with no art in it: one transparent pixel.
+const BLANK_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNgYGBgAAAABQABeqhXUAAAAABJRU5ErkJggg==', 'base64');
+const ART_ESSENTIALS = ['#art-title', '#art-message', '.dialog-cancel'];
+const LOADING_PROFILES = {
+  phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+  smallPhone: { viewport: { width: 320, height: 568 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
+  desktop: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 },
+  zoomedDesktop: { viewport: { width: 853, height: 480 }, deviceScaleFactor: 1.5 },
+};
+
+/**
+ * A page whose sprite-sheet responses the test controls. `sheet.mode` is read
+ * when each request arrives — 'pass', 'delay', 'fail' (404), 'abort' (network
+ * error), 'truncated' or 'blank' — so a test can let a retry through.
+ */
+// Records, on the page's own clock, when media first starts loading and when
+// the worker is registered, to compare with the sheet's Resource Timing.
+function recordLoadOrder() {
+  window.__loadOrder = { media: [], registered: 0, precache: null };
+  const { load, play } = HTMLMediaElement.prototype;
+  HTMLMediaElement.prototype.load = function recordedLoad(...args) {
+    window.__loadOrder.media.push(performance.now());
+    return load.apply(this, args);
+  };
+  HTMLMediaElement.prototype.play = function recordedPlay(...args) {
+    window.__loadOrder.media.push(performance.now());
+    return play.apply(this, args);
+  };
+  const container = navigator.serviceWorker;
+  if (!container) return;
+  const register = container.register.bind(container);
+  container.register = (...args) => {
+    window.__loadOrder.registered = performance.now();
+    return register(...args);
+  };
+  container.addEventListener('message', (event) => {
+    if (event.data?.type === 'DEJA_VU_PRECACHE') window.__loadOrder.precache = event.data;
+  });
+}
+
+async function sheetPage(browser, baseUrl, profile, { mode = 'pass', delayMs = 0, workers = false, seed = null } = {}) {
+  const context = await browser.newContext({ ...profile, serviceWorkers: workers ? 'allow' : 'block' });
+  await context.addInitScript(recordLoadOrder);
+  await context.addInitScript({ path: PROBES_PATH });
+  if (seed) await context.addInitScript(seed);
+  const page = await context.newPage();
+  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
+  const sheet = { mode, delayMs, requests: 0, finishedAt: 0 };
+  const truncated = (await readFile(path.join(distDirectory, SHEET_FILE))).subarray(0, 4096);
+  await page.route(`**/${SHEET_FILE}*`, async (route) => {
+    sheet.requests += 1;
+    const current = sheet.mode;
+    if (current === 'delay') await new Promise((resolve) => setTimeout(resolve, sheet.delayMs).unref());
+    try {
+      if (current === 'fail') await route.fulfill({ status: 404, contentType: 'text/plain', body: 'missing' });
+      else if (current === 'abort') await route.abort('internetdisconnected');
+      else if (current === 'truncated') await route.fulfill({ status: 200, contentType: 'image/png', body: truncated });
+      else if (current === 'blank') await route.fulfill({ status: 200, contentType: 'image/png', body: BLANK_PNG });
+      else await route.continue();
+    } catch (_) {
+      // The page abandoned this request, e.g. a retry replaced it.
+    }
+  });
+  const log = { music: 0, console: [] };
+  page.on('requestfinished', (request) => {
+    if (request.url().includes(SHEET_FILE)) sheet.finishedAt = Date.now();
+  });
+  page.on('request', (request) => {
+    if (/\.mp3$/i.test(decodeURIComponent(new URL(request.url()).pathname))) log.music += 1;
+  });
+  page.on('console', (message) => log.console.push(`${message.type()}: ${message.text()}`));
+  return { context, page, sheet, log };
+}
+
+function loadingState(page) {
+  return page.evaluate(() => {
+    const dialog = document.querySelector('#art-dialog');
+    const sides = [...document.querySelectorAll('#card-grid .card-side')];
+    return {
+      dialog: dialog.open ? dialog.dataset.state : null,
+      retryVisible: !document.querySelector('#btn-art-retry').hidden,
+      focused: document.activeElement?.id || document.activeElement?.className || '',
+      message: document.querySelector('#art-message').textContent,
+      screen: document.querySelector('.screen.is-active')?.id || '',
+      difficultyOpen: document.querySelector('#difficulty-dialog').open,
+      cards: document.querySelectorAll('#card-grid .memory-card').length,
+      sides: sides.length,
+      painted: sides.filter((side) => side.dataset.spritePainted && side.querySelector('canvas')?.width > 0).length,
+      gameMessage: document.querySelector('#game-message').textContent,
+      previewing: Boolean(window.DEJA_VU_PREVIEW_ACTIVE),
+      clock: document.querySelector('#stat-time').textContent,
+      played: JSON.parse(localStorage.getItem('inspireDejaVu:v1:statistics') || '{}').played || 0,
+    };
+  });
+}
+
+/** Waits until the app's own card-art loader reports `state`. */
+async function waitForArtState(page, state, timeout = 10000) {
+  // waitForFunction would take an async predicate's promise as truthy, so the
+  // module is fetched once (the app's own instance) and then polled directly.
+  await page.evaluate(async () => {
+    window.__cardArt = await import('./sprite-atlas.js');
+  });
+  await page.waitForFunction((expected) => window.__cardArt.cardArtState() === expected, state, { timeout });
+}
+
+async function pickDifficulty(page, difficulty) {
+  await page.evaluate(() => window.__deja.openDialog('difficulty-dialog'));
+  await page.evaluate((value) => document.querySelector(`[data-difficulty="${value}"]`).click(), difficulty);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+/** Waits for a board to be on screen, then reads it before anything else runs. */
+async function boardWhenStarted(page, timeout = 15000) {
+  await page.waitForFunction(
+    () => document.querySelector('#screen-game').classList.contains('is-active')
+      && document.querySelectorAll('#card-grid .memory-card').length > 0,
+    null,
+    { timeout, polling: 'raf' },
+  );
+  return loadingState(page);
+}
+
+function assertNothingStarted(runner, label, state, playedBefore) {
+  runner.check(`${label} — no board, clock or preview while the art is missing`, () => {
+    assert.equal(state.screen, 'screen-menu', `moved to ${state.screen}`);
+    assert.equal(state.cards, 0, `${state.cards} cards dealt`);
+    assert.equal(state.previewing, false, 'the memorize preview started');
+    assert.equal(state.played, playedBefore, 'the game was counted as played');
+  });
+}
+
+function assertStartedWithArt(runner, label, state, { cards, memorizeSeconds = null }) {
+  runner.check(`${label} — board starts with every side painted`, () => {
+    assert.equal(state.dialog, null, `the card-art dialog is still open (${state.dialog})`);
+    assert.equal(state.cards, cards, `${state.cards} cards`);
+    assert.equal(state.painted, state.sides, `${state.painted} of ${state.sides} sides painted when the board appeared`);
+  });
+  if (memorizeSeconds !== null) {
+    runner.check(`${label} — memorize preview starts only once the art is shown`, () => {
+      assert.ok(state.previewing, 'no preview');
+      assert.equal(state.gameMessage, `Memorize the board — ${memorizeSeconds}`, 'the preview ran while the art was loading');
+    });
+  }
+}
+
+// A scenario whose behaviour regressed usually fails as a wait that times
+// out. That is recorded as the scenario's failure, its pages are closed, and
+// the run carries on, so one regression does not hide the rest.
+async function loadingScenario(runner, label, body) {
+  runner.group(`loading/${label}`);
+  const contexts = [];
+  try {
+    await body(contexts);
+  } catch (error) {
+    runner.check(`${label} — runs to completion`, () => {
+      throw new Error(String(error?.message || error).split('\n')[0]);
+    });
+  } finally {
+    await Promise.all(contexts.map((context) => context.close().catch(() => {})));
+  }
+}
+
+async function auditLoading(runner, browser, baseUrl) {
+  // Cold cache: a first visit with nothing stored. The sheet is fetched once
+  // (the preload and the drawing code share it), first; music and the worker
+  // follow it; the worker's precache then holds it for offline play.
+  for (const name of ['phone', 'desktop']) {
+    const label = `cold cache ${name}`;
+    await loadingScenario(runner, label, async (contexts) => {
+      const { context, page, sheet } = await sheetPage(browser, baseUrl, LOADING_PROFILES[name], { workers: true });
+      contexts.push(context);
+      await page.goto(baseUrl, { waitUntil: 'load' });
+      await waitForArtState(page, 'ready');
+      await page.evaluate(() => window.__deja.showScreen('menu'));
+      await pickDifficulty(page, 'insane');
+      const state = await boardWhenStarted(page);
+      assertStartedWithArt(runner, label, state, { cards: 30, memorizeSeconds: 8 });
+      runner.check(`${label} — sheet requested once`, () => {
+        assert.equal(sheet.requests, 1, `${sheet.requests} page requests for the sheet: the preload was not reused`);
+      });
+      await page.waitForFunction(() => window.__loadOrder.registered > 0, null, { timeout: 15000 });
+      const order = await page.evaluate(() => ({
+        ...window.__loadOrder,
+        sheetEnd: performance.getEntriesByType('resource')
+          .filter((entry) => entry.name.includes('card-flip-sprite-sheet.png'))
+          .reduce((latest, entry) => Math.max(latest, entry.responseEnd), 0),
+      }));
+      runner.check(`${label} — music and the worker wait for the sheet`, () => {
+        assert.ok(order.sheetEnd > 0, 'no Resource Timing entry for the sheet');
+        assert.ok(order.media.length > 0, 'music never started loading');
+        assert.ok(order.media.every((at) => at >= order.sheetEnd), 'music started loading before the sheet arrived');
+        assert.ok(order.registered >= order.sheetEnd, 'the worker registered before the sheet arrived');
+      });
+      const cached = await page.evaluate(async () => {
+        await navigator.serviceWorker.ready;
+        const names = await caches.keys();
+        const shell = names.find((key) => key.startsWith('deja-vu-'));
+        return Boolean(shell && await (await caches.open(shell)).match('./card-flip-sprite-sheet.png'));
+      });
+      runner.check(`${label} — the installed worker holds the sheet`, () => assert.ok(cached, 'sheet missing from the precache'));
+    });
+  }
+
+  // The first gesture still unlocks music and starts the intro while the
+  // sheet is held back: deferral never costs the unlock.
+  {
+    const label = 'first gesture during a slow sheet';
+    await loadingScenario(runner, label, async (contexts) => {
+      const { context, page, sheet, log } = await sheetPage(browser, baseUrl, LOADING_PROFILES.phone, { mode: 'delay', delayMs: 4000 });
+      contexts.push(context);
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      await page.evaluate((url) => window.__deja.useIntroFixture(url), INTRO_FIXTURE);
+      const musicBefore = log.music;
+      await page.click('#screen-start');
+      await page.waitForTimeout(300);
+      const after = await page.evaluate(() => ({
+        screen: document.querySelector('.screen.is-active')?.id,
+        introPlaying: !document.querySelector('#intro-video').paused,
+      }));
+      runner.check(`${label} — intro starts`, () => {
+        assert.ok(['screen-intro', 'screen-menu'].includes(after.screen), `landed on ${after.screen}`);
+      });
+      runner.check(`${label} — music unlock requests both loops`, () => {
+        assert.equal(musicBefore, 0, 'music was requested before the gesture and before the sheet');
+        assert.ok(log.music >= 2, `${log.music} music requests after the gesture`);
+        assert.equal(sheet.finishedAt, 0, 'the sheet had already arrived, so this proved nothing');
+      });
+    });
+  }
+
+  // Slow network: the start waits behind the loading dialog, then the board
+  // arrives painted with its full memorize time.
+  for (const name of ['smallPhone', 'zoomedDesktop']) {
+    const label = `slow sheet ${name}`;
+    await loadingScenario(runner, label, async (contexts) => {
+      const { context, page } = await sheetPage(browser, baseUrl, LOADING_PROFILES[name], { mode: 'delay', delayMs: 3000 });
+      contexts.push(context);
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      await page.evaluate(() => window.__deja.showScreen('menu'));
+      await pickDifficulty(page, 'insane');
+      const waiting = await loadingState(page);
+      runner.check(`${label} — loading dialog shown`, () => {
+        assert.equal(waiting.dialog, 'loading');
+        assert.equal(waiting.retryVisible, false, 'retry offered before anything failed');
+      });
+      assertNothingStarted(runner, label, waiting, 0);
+      await auditView(runner, page, `${label} loading dialog`, ART_ESSENTIALS,
+        name === 'zoomedDesktop' ? DESKTOP_MUST_FIT : {});
+      const state = await boardWhenStarted(page);
+      assertStartedWithArt(runner, label, state, { cards: 30, memorizeSeconds: 8 });
+      runner.check(`${label} — counted once`, () => assert.equal(state.played, 1));
+    });
+  }
+
+  // A sheet that hangs: after a while the dialog offers a retry, and the
+  // retry, not the stalled request, starts the board.
+  {
+    const label = 'stalled sheet';
+    await loadingScenario(runner, label, async (contexts) => {
+      const { context, page, sheet } = await sheetPage(browser, baseUrl, LOADING_PROFILES.desktop, { mode: 'delay', delayMs: 30000 });
+      contexts.push(context);
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      await page.evaluate(() => window.__deja.showScreen('menu'));
+      await pickDifficulty(page, 'easy');
+      await page.waitForFunction(() => document.querySelector('#art-dialog').dataset.state === 'slow', null, { timeout: 20000 });
+      const slow = await loadingState(page);
+      runner.check(`${label} — offers a retry while still waiting`, () => {
+        assert.equal(slow.dialog, 'slow');
+        assert.ok(slow.retryVisible, 'no retry button');
+        assert.equal(slow.focused, 'btn-art-retry', `focus on ${slow.focused}`);
+      });
+      sheet.mode = 'pass';
+      await page.click('#btn-art-retry');
+      const state = await boardWhenStarted(page);
+      assertStartedWithArt(runner, label, state, { cards: 12, memorizeSeconds: 4 });
+      runner.check(`${label} — one board, counted once`, () => assert.equal(state.played, 1));
+    });
+  }
+
+  // Navigation during loading: Escape and Cancel back out to the picker, and
+  // a sheet arriving afterwards starts nothing.
+  {
+    const label = 'cancelled while loading';
+    await loadingScenario(runner, label, async (contexts) => {
+      const { context, page } = await sheetPage(browser, baseUrl, LOADING_PROFILES.phone, { mode: 'delay', delayMs: 4000 });
+      contexts.push(context);
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      // The real way in, so key handling sees the menu as the current screen.
+      await page.evaluate((url) => window.__deja.useIntroFixture(url), INTRO_FIXTURE);
+      await page.click('#screen-start');
+      // The fixture intro lasts 0.2 s and hands over to the menu by itself.
+      await page.waitForFunction(() => document.querySelector('#screen-menu').classList.contains('is-active'), null, { timeout: 10000 });
+      await page.click('#btn-new-game');
+      await page.click('[data-difficulty="easy"]');
+      await page.keyboard.press('Escape');
+      const escaped = await loadingState(page);
+      runner.check(`${label} — Escape closes only the loading dialog`, () => {
+        assert.equal(escaped.dialog, null);
+        assert.ok(escaped.difficultyOpen, 'the difficulty picker closed too');
+      });
+      await page.click('[data-difficulty="insane"]');
+      await page.click('#art-dialog .dialog-cancel');
+      const cancelled = await loadingState(page);
+      runner.check(`${label} — Cancel returns to the picker`, () => {
+        assert.equal(cancelled.dialog, null);
+        assert.ok(cancelled.difficultyOpen, 'the difficulty picker closed too');
+      });
+      await page.click('#difficulty-dialog .dialog-cancel');
+      await waitForArtState(page, 'ready');
+      await page.waitForTimeout(300);
+      const later = await loadingState(page);
+      assertNothingStarted(runner, `${label}, after the sheet arrived`, later, 0);
+      await pickDifficulty(page, 'easy');
+      const state = await loadingState(page);
+      runner.check(`${label} — a later start needs no dialog`, () => {
+        assert.equal(state.screen, 'screen-game', JSON.stringify(state));
+        assert.equal(state.dialog, null);
+        assert.equal(state.painted, 24, `${state.painted} of 24 sides painted`);
+      });
+    });
+  }
+
+  // Continue waits the same way, and resumes without a preview.
+  {
+    const label = 'continue while loading';
+    await loadingScenario(runner, label, async (contexts) => {
+      const seed = () => {
+        const deck = [];
+        for (let pattern = 0; pattern < 6; pattern += 1) {
+          deck.push({ uid: `a${pattern}`, pattern, matched: false }, { uid: `b${pattern}`, pattern, matched: false });
+        }
+        localStorage.setItem('inspireDejaVu:v1:activeGame', JSON.stringify({
+          version: 1, active: true, difficulty: 'easy', deck, open: [], matchedPairs: 0, moves: 3,
+          mistakes: 1, elapsed: 42, paused: false, locked: false, turn: 'idle', completed: false, sessionId: '', turnId: 0,
+        }));
+      };
+      const { context, page } = await sheetPage(browser, baseUrl, LOADING_PROFILES.phone, { mode: 'delay', delayMs: 2500, seed });
+      contexts.push(context);
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      await page.evaluate(() => window.__deja.showScreen('menu'));
+      await page.evaluate(() => document.querySelector('#btn-continue').click());
+      const waiting = await loadingState(page);
+      runner.check(`${label} — waits behind the loading dialog`, () => {
+        assert.equal(waiting.dialog, 'loading');
+        assert.equal(waiting.screen, 'screen-menu');
+      });
+      const state = await boardWhenStarted(page);
+      assertStartedWithArt(runner, label, state, { cards: 12 });
+      runner.check(`${label} — resumes the saved clock without a preview`, () => {
+        assert.equal(state.previewing, false, 'a resumed board replayed the memorize preview');
+        assert.match(state.clock, /^00:4[23]$/, `clock shows ${state.clock}`);
+      });
+    });
+  }
+
+  // Missing, unreachable and undecodable sheets: a retry state, never an
+  // invisible board, and a retry that works once the sheet is back.
+  for (const [mode, name] of [['fail', 'smallPhone'], ['abort', 'phone'], ['truncated', 'desktop'], ['blank', 'zoomedDesktop']]) {
+    const label = `sheet ${mode}`;
+    await loadingScenario(runner, label, async (contexts) => {
+      const { context, page, sheet, log } = await sheetPage(browser, baseUrl, LOADING_PROFILES[name], { mode });
+      contexts.push(context);
+      await page.goto(baseUrl, { waitUntil: 'load' });
+      await waitForArtState(page, 'failed');
+      await page.evaluate(() => window.__deja.showScreen('menu'));
+      await pickDifficulty(page, 'insane');
+      const failed = await loadingState(page);
+      runner.check(`${label} — failure dialog with retry focused`, () => {
+        assert.equal(failed.dialog, 'failed');
+        assert.ok(failed.retryVisible, 'no retry button');
+        assert.equal(failed.focused, 'btn-art-retry', `focus on ${failed.focused}`);
+      });
+      assertNothingStarted(runner, label, failed, 0);
+      await auditView(runner, page, `${label} failure dialog`, [...ART_ESSENTIALS, '#btn-art-retry'],
+        name.endsWith('esktop') ? DESKTOP_MUST_FIT : {});
+      runner.check(`${label} — reported in the console`, () => {
+        assert.ok(log.console.some((line) => /\[DEJA VU\] the card sprite sheet (failed to load|did not decode)/.test(line)),
+          'no console report of the failure');
+      });
+      sheet.mode = 'pass';
+      await page.click('#btn-art-retry');
+      const state = await boardWhenStarted(page);
+      assertStartedWithArt(runner, `${label} then retry`, state, { cards: 30, memorizeSeconds: 8 });
+    });
+  }
+
+  // Offline with nothing saved: the failure says so.
+  {
+    const label = 'offline first visit';
+    await loadingScenario(runner, label, async (contexts) => {
+      const { context, page } = await sheetPage(browser, baseUrl, LOADING_PROFILES.phone, { mode: 'abort' });
+      contexts.push(context);
+      await page.goto(baseUrl, { waitUntil: 'load' });
+      await context.setOffline(true);
+      await page.evaluate(() => window.__deja.showScreen('menu'));
+      await pickDifficulty(page, 'easy');
+      const state = await loadingState(page);
+      runner.check(`${label} — failure explains being offline`, () => {
+        assert.equal(state.dialog, 'failed');
+        assert.match(state.message, /offline/i);
+      });
+    });
+  }
+
+  // Honest offline readiness: a deploy missing the sheet never installs a
+  // worker, so it never claims to work offline without its cards.
+  {
+    const label = 'deploy missing the sheet';
+    await loadingScenario(runner, label, async (contexts) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), 'deja-vu-no-sheet-'));
+      await cp(distDirectory, directory, { recursive: true });
+      await rm(path.join(directory, SHEET_FILE));
+      const broken = await startServer({ directory });
+      try {
+        const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+        contexts.push(context);
+        await context.addInitScript(recordLoadOrder);
+        const page = await context.newPage();
+        await page.goto(broken.baseUrl, { waitUntil: 'load' });
+        await page.waitForFunction(() => window.__loadOrder.precache, null, { timeout: 20000 }).catch(() => {});
+        await page.waitForTimeout(500);
+        const worker = await page.evaluate(async () => {
+          const registration = await navigator.serviceWorker.getRegistration();
+          return {
+            report: window.__loadOrder.precache,
+            active: Boolean(registration?.active),
+            controlled: Boolean(navigator.serviceWorker.controller),
+          };
+        });
+        runner.check(`${label} — install fails loudly, naming the sheet`, () => {
+          assert.equal(worker.report?.reason, 'install-failed', `worker reported ${JSON.stringify(worker.report)}`);
+          assert.ok(worker.report.failures.some((failure) => failure.path === `./${SHEET_FILE}`), 'the sheet is not among the failures');
+        });
+        runner.check(`${label} — no worker is activated`, () => {
+          assert.equal(worker.active, false, 'a worker activated without the card art');
+          assert.equal(worker.controlled, false, 'the page is controlled by a worker without the card art');
+        });
+      } finally {
+        await broken.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
   }
 }
 
@@ -951,6 +1443,7 @@ async function main() {
     if (SUITE_FILTER.has('mobile')) await auditMobile(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('offline')) await auditOffline(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('sprites')) await auditSprites(runner, browser, server.baseUrl);
+    if (SUITE_FILTER.has('loading')) await auditLoading(runner, browser, server.baseUrl);
   } finally {
     await browser.close();
     await server.close();

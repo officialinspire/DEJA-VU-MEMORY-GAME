@@ -68,8 +68,12 @@ async function verifyMusicManager() {
       this.volume = 0;
       this.playCalls = 0;
       this.pauseCalls = 0;
+      this.loadCalls = 0;
+      this.readyState = 0;
+      this.preload = 'auto';
       audioInstances.push(this);
     }
+    load() { this.loadCalls += 1; }
     play() { this.paused = false; this.playCalls += 1; return Promise.resolve(); }
     pause() { this.paused = true; this.pauseCalls += 1; }
   }
@@ -92,7 +96,7 @@ async function verifyMusicManager() {
     .replace(/new URL\((['"][^'"]+['"]), import\.meta\.url\)\.href/g, '$1')
     .replace(/export function /g, 'function ')
     .replace(/export \{ MUSIC_SCENES \};?/, '')
-    .concat('\nwindow.__AUDIO_TEST__ = { MUSIC_SCENES, configureMusic, transitionMusic, unlockMusic, getMusicState };');
+    .concat('\nwindow.__AUDIO_TEST__ = { MUSIC_SCENES, configureMusic, transitionMusic, unlockMusic, warmMusic, getMusicState };');
   vm.runInNewContext(source, sandbox, { filename: 'audio-manager.js' });
   const api = window.__AUDIO_TEST__;
   const advance = (time) => {
@@ -105,6 +109,12 @@ async function verifyMusicManager() {
 
   assert.equal(audioInstances.length, 2, 'exactly two reusable music loops are created');
   assert.equal(audioInstances.reduce((total, audio) => total + audio.playCalls, 0), 0, 'music is silent before interaction');
+  assert.deepEqual(audioInstances.map((audio) => audio.preload), ['none', 'none'], 'music downloads nothing before the card art');
+  api.warmMusic();
+  assert.deepEqual(audioInstances.map((audio) => audio.preload), ['auto', 'auto'], 'warming switches both loops to buffering');
+  assert.deepEqual(audioInstances.map((audio) => audio.loadCalls), [1, 1], 'warming starts each idle loop loading once');
+  api.warmMusic();
+  assert.deepEqual(audioInstances.map((audio) => audio.loadCalls), [1, 1], 'warming twice does not restart a load');
   assert.equal(await api.unlockMusic(), true, 'initial gesture unlocks mobile audio');
   assert.deepEqual(audioInstances.map((audio) => audio.playCalls), [1, 1], 'unlock attempts each loop once');
 
@@ -237,7 +247,7 @@ async function verifyAppShell() {
   const shellEntries = [...shellBody.matchAll(/'([^']+)'/g)].map((match) => match[1]);
   const shellSet = new Set(shellEntries);
   assert.equal(shellEntries.length, shellSet.size, 'service-worker app shell has no duplicate entries');
-  assert.match(swSource, /const CACHE_VERSION = 'v1\.3\.1';/, 'cache version is bumped for this release');
+  assert.match(swSource, /const CACHE_VERSION = 'v1\.4\.0';/, 'cache version is bumped for this release');
   assert.match(swSource, /const CACHE_NAME = `deja-vu-\$\{CACHE_VERSION\}`;/, 'cache name is derived from CACHE_VERSION');
   assert.ok(!/cache\.addAll\(/.test(swSource), 'precache is per-asset so one failure cannot abort install');
   assert.match(swSource, /status: 206/, 'cached media answers byte-range requests offline');
@@ -250,10 +260,18 @@ async function verifyAppShell() {
   for (const entry of optionalEntries) {
     assert.ok(/\.(?:png|mp3|mp4)$/.test(entry), `${entry} is media or artwork, not required app code`);
   }
+  // Required means the install fails without it: the app code, and the card
+  // sprite sheet, without which no board can be drawn offline.
+  const cardArt = './card-flip-sprite-sheet.png';
+  assert.ok(!optionalEntries.includes(cardArt), 'the card sprite sheet is required, so offline readiness includes the cards');
   for (const entry of shellSet) {
-    if (optionalEntries.includes(entry)) continue;
+    if (optionalEntries.includes(entry) || entry === cardArt) continue;
     assert.ok(/(?:^\.\/$|\.(?:html|css|js|webmanifest)$)/.test(entry), `${entry} is required app code`);
   }
+  assert.match(swSource, /await store\(APP_SHELL\.filter\(\(path\) => !OPTIONAL_ASSETS\.has\(path\)\)\)/,
+    'required entries are precached before optional media');
+  assert.match(swSource, /fetch\(toAbsolute\(path\), \{ cache: 'no-cache' \}\)/,
+    'precache revalidates instead of trusting or re-downloading the HTTP cache');
 
   const requiredSongs = [
     './Deja Vu - Main Menu (Vibe 1).mp3',
@@ -309,6 +327,6 @@ await verifyFeedbackManager();
 await verifyAppShell();
 
 console.log('Runtime scoring: PASS (formula, preview exclusion, and 49/50, 69/70, 84/85 boundaries)');
-console.log('Scene music: PASS (unlock, crossfade, pause/resume, completion level, rapid cancellation, no duplicate loops)');
+console.log('Scene music: PASS (deferred until card art, unlock, crossfade, pause/resume, completion level, rapid cancellation, no duplicate loops)');
 console.log('Feedback: PASS (one cue per event, independent SFX/haptics, unsupported vibration guard)');
-console.log('Service-worker shell: PASS (complete, unique, both songs, no legacy active dependency, versioned cache, tolerant precache, range-capable)');
+console.log('Service-worker shell: PASS (complete, unique, both songs, card art required, required before media, revalidating, no legacy active dependency, versioned cache, tolerant precache, range-capable)');
