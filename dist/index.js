@@ -15,6 +15,7 @@ import {
   retryCardArt,
   whenCardArtReady,
 } from './sprite-atlas.js';
+import { gameplayClock } from './gameplay-clock.js';
 
 const STORAGE = {
   settings: 'inspireDejaVu:v1:settings',
@@ -46,6 +47,10 @@ const PATTERNS = [
   { col: 1, row: 3, name: 'purple spiral' },
 ];
 
+// Gameplay delays, in gameplay time (see gameplay-clock.js): they freeze while
+// the game is paused or hidden. With normal motion, how long a mismatch stays
+// face-up to study is a difficulty setting (runtime-config.js); 920 ms is only
+// the fallback for a board without one.
 const TIMING = Object.freeze({
   normal: Object.freeze({
     cardFlip: 430,
@@ -64,7 +69,9 @@ const TIMING = Object.freeze({
 });
 
 function timing(name) {
-  return (settings.reducedMotion ? TIMING.reduced : TIMING.normal)[name];
+  if (settings.reducedMotion) return TIMING.reduced[name];
+  if (name === 'mismatchStudy') return DIFFICULTIES[game.difficulty]?.mismatchStudyMs ?? TIMING.normal.mismatchStudy;
+  return TIMING.normal[name];
 }
 
 const DEFAULT_SETTINGS = {
@@ -115,7 +122,6 @@ let game = createEmptyGame();
 let currentScreen = 'start';
 let started = false;
 let gameGeneration = 0;
-const gameplayTimers = new Set();
 
 function installCardFlipPolish() {
   if (document.querySelector('#deja-vu-card-flip-polish')) return;
@@ -171,6 +177,7 @@ function createEmptyGame() {
     moves: 0,
     mistakes: 0,
     elapsed: 0,
+    elapsedMs: 0,
     paused: false,
     locked: false,
     turn: 'idle',
@@ -180,29 +187,41 @@ function createEmptyGame() {
   };
 }
 
+// Runs in gameplay time, so a pause or a hidden page freezes it with its
+// remaining delay. The generation, session and turn guards still drop it if
+// the board or turn it belonged to has moved on by the time it fires.
 function scheduleGameplayTask(callback, delay) {
   const generation = gameGeneration;
   const sessionId = game.sessionId;
   const turnId = game.turnId;
-  const timer = window.setTimeout(() => {
-    gameplayTimers.delete(timer);
+  return gameplayClock.schedule(() => {
     if (generation !== gameGeneration) return;
     if (sessionId !== game.sessionId) return;
     if (turnId !== game.turnId) return;
     callback();
   }, delay);
-  gameplayTimers.add(timer);
-  return timer;
 }
 
-function cancelGameplayTasks() {
-  gameplayTimers.forEach((timer) => window.clearTimeout(timer));
-  gameplayTimers.clear();
-}
-
+// A new board, a resumed board, the menu or completion retires everything
+// still pending for the old one, the memorize preview included.
 function beginGameGeneration() {
-  cancelGameplayTasks();
+  gameplayClock.cancelAll();
   gameGeneration += 1;
+  window.dispatchEvent(new CustomEvent('deja-vu:game-generation'));
+}
+
+// Score time comes from gameplay-clock.js, accumulated from timestamps while
+// a game is actually being played; the memorize preview keeps itself out.
+function syncPlayClock() {
+  gameplayClock.setCounting(game.active && !game.completed && !game.paused && currentScreen === 'game');
+  captureElapsed();
+}
+
+function captureElapsed() {
+  if (!game.active && !game.completed) return;
+  const elapsedMs = Math.floor(gameplayClock.elapsedMs());
+  game.elapsedMs = elapsedMs;
+  game.elapsed = Math.floor(elapsedMs / 1000);
 }
 
 function resetTransientTurn() {
@@ -245,6 +264,7 @@ function showScreen(name) {
   });
   const activeScreen = document.querySelector(`#screen-${name}`);
   activeScreen?.focus({ preventScroll: true });
+  syncPlayClock();
   syncSceneMusic();
 }
 
@@ -445,6 +465,7 @@ function beginNewGame(difficultyKey) {
     deck: createDeck(difficulty.pairs),
     sessionId: createSessionId(),
   };
+  gameplayClock.resetElapsed(0);
   statistics.played += 1;
   writeStorage(STORAGE.stats, statistics);
   saveGame();
@@ -482,6 +503,12 @@ function continueSavedGame() {
     turnId: 0,
     deck: saved.deck.map((card) => ({ ...card })),
   };
+  // Saves before millisecond tracking carry whole seconds only.
+  const savedMs = Number.isInteger(saved.elapsedMs) && Math.floor(saved.elapsedMs / 1000) === saved.elapsed
+    ? saved.elapsedMs
+    : saved.elapsed * 1000;
+  gameplayClock.resetElapsed(savedMs);
+  captureElapsed();
   renderGame();
   showScreen('game');
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
@@ -490,6 +517,7 @@ function continueSavedGame() {
 
 function saveGame() {
   if (!game.active) return;
+  captureElapsed();
   const stableGame = {
     ...game,
     open: [],
@@ -679,11 +707,13 @@ function focusNextCard(fromIndex) {
 
 function completeGame() {
   if (!game.active || game.completed) return;
+  captureElapsed();
   game.completed = true;
   game.active = false;
   game.paused = true;
   game.locked = true;
   game.turn = 'complete';
+  gameplayClock.setCounting(false);
   beginGameGeneration();
   removeStorage(STORAGE.game);
   updateContinueButton();
@@ -737,9 +767,12 @@ function completeGame() {
 function pauseGame() {
   if (!game.active || game.completed || currentScreen !== 'game' || pauseDialog.open) return;
   game.paused = true;
+  syncPlayClock();
   saveGame();
   syncSceneMusic();
   pauseDialog.showModal();
+  // Turn resolution and the memorize preview hold their remaining time.
+  gameplayClock.suspend('pause');
   document.querySelector('#btn-resume').focus();
   playFeedback('tap');
 }
@@ -747,6 +780,7 @@ function pauseGame() {
 function resumeGame() {
   if (!game.active || game.completed) return;
   game.paused = false;
+  syncPlayClock();
   syncSceneMusic();
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
 }
@@ -921,7 +955,11 @@ document.querySelector('#btn-pause-menu').addEventListener('click', () => {
   playFeedback('tap');
   showMenu();
 });
+// 'close' arrives a task after the dialog shut; rapid Escapes can reopen it
+// in between, and then play must stay frozen.
 pauseDialog.addEventListener('close', () => {
+  if (pauseDialog.open) return;
+  gameplayClock.resume('pause');
   if (currentScreen === 'game' && game.active) resumeGame();
 });
 
@@ -974,21 +1012,33 @@ document.querySelector('#setting-motion').addEventListener('change', (event) => 
   playFeedback('tap');
 });
 
+// A hidden page freezes gameplay time outright; coming back opens the pause
+// dialog, which keeps it frozen until the player resumes.
+function syncPageVisibility() {
+  if (document.hidden) gameplayClock.suspend('hidden');
+  else gameplayClock.resume('hidden');
+}
+syncPageVisibility();
+
 document.addEventListener('visibilitychange', () => {
+  syncPageVisibility();
   if (document.hidden && game.active && currentScreen === 'game') {
     game.paused = true;
+    syncPlayClock();
     saveGame();
   } else if (!document.hidden && game.active && currentScreen === 'game' && !pauseDialog.open) {
     pauseGame();
   }
 });
 
-window.setInterval(() => {
-  if (!game.active || game.paused || game.completed || currentScreen !== 'game') return;
-  game.elapsed += 1;
+// The shown time follows the score clock to the second, with no interval of
+// its own to drift; it is idle whenever the clock is.
+gameplayClock.onSecond(() => {
+  if (!game.active) return;
+  captureElapsed();
   document.querySelector('#stat-time').textContent = formatTime(game.elapsed);
   if (game.elapsed % 5 === 0) saveGame();
-}, 1000);
+});
 
 window.addEventListener('beforeunload', saveGame);
 

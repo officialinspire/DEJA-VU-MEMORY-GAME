@@ -30,7 +30,7 @@ const SPRITE_PROBES_PATH = path.join(rootDirectory, 'scripts', 'sprite-probes.js
 const BASELINE_PATH = path.join(rootDirectory, 'scripts', 'mobile-layout-baseline.json');
 const UPDATE_BASELINE = process.argv.includes('--update-baseline');
 // --suite=desktop,offline narrows a run while iterating; the default is all.
-const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites', 'loading'];
+const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites', 'loading', 'lifecycle'];
 const SUITE_FILTER = (() => {
   const flag = process.argv.find((arg) => arg.startsWith('--suite='));
   if (!flag) return new Set(ALL_SUITES);
@@ -1418,6 +1418,517 @@ async function auditLoading(runner, browser, baseUrl) {
   }
 }
 
+// -------------------------------------------------------------- lifecycle ---
+
+// Page visibility the test can flip, and a count of every timer callback the
+// page runs, so "nothing runs in the background" can be measured.
+function lifecycleProbes() {
+  let hidden = false;
+  Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => hidden });
+  Object.defineProperty(Document.prototype, 'visibilityState', {
+    configurable: true,
+    get: () => (hidden ? 'hidden' : 'visible'),
+  });
+  const counted = (native) => function countedTimer(callback, ...rest) {
+    if (typeof callback !== 'function') return native.call(window, callback, ...rest);
+    return native.call(window, function countedCallback(...args) {
+      window.__life.timerCallbacks += 1;
+      return callback.apply(this, args);
+    }, ...rest);
+  };
+  window.setTimeout = counted(window.setTimeout);
+  window.setInterval = counted(window.setInterval);
+  window.__life = {
+    timerCallbacks: 0,
+    setHidden(value) {
+      hidden = value;
+      document.dispatchEvent(new Event('visibilitychange'));
+    },
+    pairs() {
+      const groups = new Map();
+      document.querySelectorAll('#card-grid .memory-card').forEach((card) => {
+        const key = card.querySelector('.card-side-front').getAttribute('style');
+        groups.set(key, [...(groups.get(key) || []), Number(card.dataset.index)]);
+      });
+      return [...groups.values()];
+    },
+    click(...indices) {
+      indices.forEach((index) => document.querySelector(`#card-grid [data-index="${index}"]`).click());
+    },
+    state() {
+      const cards = [...document.querySelectorAll('#card-grid .memory-card')];
+      return {
+        faceUp: cards.filter((card) => card.classList.contains('is-flipped') && !card.classList.contains('is-matched'))
+          .map((card) => Number(card.dataset.index)),
+        matched: cards.filter((card) => card.classList.contains('is-matched')).length,
+        moves: Number(document.querySelector('#stat-moves').textContent),
+        mistakes: Number(document.querySelector('#stat-mistakes').textContent),
+        time: document.querySelector('#stat-time').textContent,
+        message: document.querySelector('#game-message').textContent,
+        previewing: document.querySelector('#card-grid').classList.contains('is-previewing'),
+        paused: document.querySelector('#pause-dialog').open,
+        completed: document.querySelector('#complete-dialog').open,
+        scoreMs: window.__clock ? window.__clock.elapsedMs() : null,
+        suspended: window.__clock ? window.__clock.isSuspended() : null,
+        pending: window.__clock ? window.__clock.pendingTasks() : null,
+      };
+    },
+  };
+}
+
+async function lifecyclePage(browser, baseUrl) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
+  await context.addInitScript(lifecycleProbes);
+  await context.addInitScript({ path: PROBES_PATH });
+  const page = await context.newPage();
+  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
+  await page.goto(baseUrl, { waitUntil: 'load' });
+  await page.evaluate(async () => {
+    window.__clock = (await import('./gameplay-clock.js')).gameplayClock;
+  });
+  await page.waitForTimeout(300);
+  await page.evaluate(() => window.__deja.showScreen('menu'));
+  return { context, page };
+}
+
+const lifeState = (page) => page.evaluate(() => window.__life.state());
+const timerCallbacks = (page) => page.evaluate(() => window.__life.timerCallbacks);
+
+/** Starts a board and waits out its memorize preview. */
+async function playableBoard(page, difficulty = 'easy') {
+  await pickDifficulty(page, difficulty);
+  await page.waitForFunction(() => !document.querySelector('#card-grid').classList.contains('is-previewing'), null, { timeout: 15000 });
+  return page.evaluate(() => window.__life.pairs());
+}
+
+async function pauseByEscape(page) {
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.querySelector('#pause-dialog').open, null, { timeout: 2000 });
+}
+
+async function resumeFromPause(page) {
+  await page.click('#btn-resume');
+  await page.waitForFunction(() => !document.querySelector('#pause-dialog').open, null, { timeout: 2000 });
+}
+
+async function auditLifecycle(runner, browser, baseUrl) {
+  const scenario = async (label, body) => {
+    runner.group(`lifecycle/${label}`);
+    const { context, page } = await lifecyclePage(browser, baseUrl);
+    try {
+      await body(page, (name, fn) => runner.check(`${label} — ${name}`, fn));
+    } catch (error) {
+      runner.check(`${label} — runs to completion`, () => {
+        throw new Error(String(error?.message || error).split('\n')[0]);
+      });
+    } finally {
+      await context.close();
+    }
+  };
+
+  await scenario('pause during the memorize preview', async (page, check) => {
+    await pickDifficulty(page, 'easy');
+    const startedAt = Date.now();
+    await page.waitForTimeout(1200);
+    await pauseByEscape(page);
+    const paused = await lifeState(page);
+    const callbacks = await timerCallbacks(page);
+    await page.waitForTimeout(2500);
+    const later = await lifeState(page);
+    check('the countdown freezes while paused', () => {
+      assert.ok(paused.previewing && later.previewing, 'the preview ended while paused');
+      assert.equal(later.message, paused.message, `countdown moved from "${paused.message}" to "${later.message}"`);
+      assert.deepEqual(later.faceUp.length, 12, 'cards flipped down during the pause');
+    });
+    check('nothing runs in the background while paused', () => {
+      assert.equal(later.suspended, true, 'gameplay is not suspended');
+      return page;
+    });
+    const pausedCallbacks = (await timerCallbacks(page)) - callbacks;
+    check('no timer fires while paused', () => assert.equal(pausedCallbacks, 0, `${pausedCallbacks} timer callbacks ran during the pause`));
+    await resumeFromPause(page);
+    await page.waitForFunction(() => !document.querySelector('#card-grid').classList.contains('is-previewing'), null, { timeout: 15000 });
+    const total = Date.now() - startedAt;
+    const done = await lifeState(page);
+    check('the preview keeps its full memorize time', () => {
+      assert.ok(total >= 4000 + 480 + 2500 - 250, `preview finished after ${total} ms, so the pause consumed memorize time`);
+      assert.ok(total <= 4000 + 480 + 2500 + 1500, `preview took ${total} ms`);
+    });
+    check('memorize time is not scored', () => assert.ok(done.scoreMs < 150, `${Math.round(done.scoreMs)} ms scored by the end of the preview`));
+  });
+
+  await scenario('pause during a match', async (page, check) => {
+    const pairs = await playableBoard(page);
+    await page.evaluate((pair) => window.__life.click(...pair), pairs[0]);
+    await pauseByEscape(page);
+    const callbacks = await timerCallbacks(page);
+    await page.waitForTimeout(1500);
+    const paused = await lifeState(page);
+    const pausedCallbacks = (await timerCallbacks(page)) - callbacks;
+    check('the match waits for the player', () => {
+      assert.equal(paused.matched, 0, 'the pair resolved while paused');
+      assert.deepEqual(paused.faceUp.sort((a, b) => a - b), [...pairs[0]].sort((a, b) => a - b));
+      assert.equal(paused.pending, 1, `${paused.pending} gameplay timers pending`);
+    });
+    check('no timer fires while paused', () => assert.equal(pausedCallbacks, 0, `${pausedCallbacks} timer callbacks ran during the pause`));
+    await resumeFromPause(page);
+    await page.waitForTimeout(800);
+    const resolved = await lifeState(page);
+    check('it resolves after resuming', () => {
+      assert.equal(resolved.matched, 2, `${resolved.matched} cards matched`);
+      assert.equal(resolved.pending, 0);
+    });
+  });
+
+  await scenario('pause during a mismatch', async (page, check) => {
+    const pairs = await playableBoard(page);
+    await page.evaluate(([first, second]) => window.__life.click(first, second), [pairs[0][0], pairs[1][0]]);
+    await page.waitForTimeout(250);
+    await pauseByEscape(page);
+    await page.waitForTimeout(2000);
+    const paused = await lifeState(page);
+    check('the mismatch stays up to study while paused', () => {
+      assert.equal(paused.faceUp.length, 2, 'the cards flipped back during the pause');
+      assert.equal(paused.mistakes, 1);
+    });
+    await resumeFromPause(page);
+    await page.waitForTimeout(350);
+    const soon = await lifeState(page);
+    check('resuming continues the study time instead of skipping it', () => {
+      assert.equal(soon.faceUp.length, 2, 'the cards flipped back the moment play resumed');
+    });
+    await page.waitForTimeout(1500);
+    const later = await lifeState(page);
+    check('then the cards flip back', () => {
+      assert.equal(later.faceUp.length, 0, `${later.faceUp.length} cards still up`);
+      assert.equal(later.message, 'Try again.');
+      assert.equal(later.pending, 0);
+    });
+  });
+
+  await scenario('background and resume', async (page, check) => {
+    const pairs = await playableBoard(page);
+    await page.waitForTimeout(1300);
+    await page.evaluate(([first, second]) => window.__life.click(first, second), [pairs[0][0], pairs[1][0]]);
+    const before = await lifeState(page);
+    const callbacks = await timerCallbacks(page);
+    await page.evaluate(() => window.__life.setHidden(true));
+    await page.waitForTimeout(2000);
+    const hidden = await lifeState(page);
+    const hiddenCallbacks = (await timerCallbacks(page)) - callbacks;
+    check('a hidden page freezes the turn and the score clock', () => {
+      assert.equal(hidden.faceUp.length, 2, 'the mismatch resolved while hidden');
+      assert.ok(Math.abs(hidden.scoreMs - before.scoreMs) < 100, `score clock moved ${Math.round(hidden.scoreMs - before.scoreMs)} ms while hidden`);
+    });
+    check('nothing runs while hidden', () => assert.equal(hiddenCallbacks, 0, `${hiddenCallbacks} timer callbacks ran while hidden`));
+    await page.evaluate(() => window.__life.setHidden(false));
+    const back = await lifeState(page);
+    check('coming back opens the pause dialog and stays frozen', () => {
+      assert.ok(back.paused, 'no pause dialog on return');
+      assert.ok(back.suspended, 'gameplay resumed without the player');
+    });
+    await resumeFromPause(page);
+    await page.waitForTimeout(1500);
+    const resumed = await lifeState(page);
+    check('play continues after resuming', () => {
+      assert.equal(resumed.faceUp.length, 0, 'the mismatch never resolved');
+      assert.ok(resumed.scoreMs > hidden.scoreMs + 1000, 'the score clock did not restart');
+    });
+  });
+
+  await scenario('score time', async (page, check) => {
+    await playableBoard(page);
+    await page.waitForTimeout(3300);
+    const played = await lifeState(page);
+    check('counts play time to the second, from the end of the preview', () => {
+      assert.ok(played.scoreMs >= 3200 && played.scoreMs <= 3700, `${Math.round(played.scoreMs)} ms scored for ~3.3 s of play`);
+      assert.equal(played.time, '00:03');
+    });
+    await pauseByEscape(page);
+    await page.waitForTimeout(1500);
+    const paused = await lifeState(page);
+    check('excludes paused time', () => assert.ok(Math.abs(paused.scoreMs - played.scoreMs) < 150, 'paused time was scored'));
+    await resumeFromPause(page);
+    const pairs = await page.evaluate(() => window.__life.pairs());
+    for (const pair of pairs) {
+      await page.evaluate((cards) => window.__life.click(...cards), pair);
+      await page.waitForTimeout(650);
+    }
+    await page.waitForFunction(() => document.querySelector('#complete-dialog').open, null, { timeout: 5000 });
+    const result = await page.evaluate(() => ({
+      time: document.querySelector('#complete-time').textContent,
+      score: Number(document.querySelector('#complete-score').textContent.replace(/[^\d]/g, '')),
+      mistakes: Number(document.querySelector('#complete-mistakes').textContent),
+      shown: document.querySelector('#stat-time').textContent,
+    }));
+    const [minutes, seconds] = result.time.split(':').map(Number);
+    check('the completion time is the time scored', () => {
+      assert.equal(result.score, 6000 - result.mistakes * 350 - (minutes * 60 + seconds) * 5, `score ${result.score} does not match ${result.time}`);
+      assert.ok(minutes * 60 + seconds >= 6 && minutes * 60 + seconds <= 9, `completed in ${result.time} for about 7 s of play`);
+    });
+  });
+
+  await scenario('rapid input', async (page, check) => {
+    const pairs = await playableBoard(page);
+    const [a, b] = [pairs[0][0], pairs[1][0]];
+    await page.evaluate(([card]) => window.__life.click(card, card, card), [a]);
+    const one = await lifeState(page);
+    check('tapping one card repeatedly opens it once', () => {
+      assert.deepEqual(one.faceUp, [a]);
+      assert.equal(one.moves, 0);
+    });
+    await page.evaluate(([first, second, third, fourth]) => window.__life.click(first, second, third, fourth), [b, pairs[2][0], pairs[2][1], pairs[3][0]]);
+    const locked = await lifeState(page);
+    check('a third and fourth card are refused while a pair resolves', () => {
+      assert.deepEqual(locked.faceUp.sort((x, y) => x - y), [a, b].sort((x, y) => x - y));
+      assert.equal(locked.moves, 1);
+      assert.equal(locked.mistakes, 1);
+    });
+    for (let press = 0; press < 6; press += 1) await page.keyboard.press('Escape');
+    // The dialog's close event lands a task after the last Escape.
+    await page.waitForFunction(() => !window.__clock.isSuspended(), null, { timeout: 2000 }).catch(() => {});
+    const toggled = await lifeState(page);
+    check('pausing and resuming rapidly ends consistent', () => {
+      assert.equal(toggled.paused, false, 'an even number of Escapes left the game paused');
+      assert.equal(toggled.suspended, false, 'gameplay stayed frozen after the dialog closed');
+    });
+    await page.waitForTimeout(1600);
+    const settled = await lifeState(page);
+    check('the interrupted turn still resolves once', () => {
+      assert.equal(settled.faceUp.length, 0);
+      assert.equal(settled.mistakes, 1);
+      assert.equal(settled.pending, 0);
+    });
+  });
+
+  await scenario('restart', async (page, check) => {
+    const pairs = await playableBoard(page);
+    await page.evaluate(([first, second]) => window.__life.click(first, second), [pairs[0][0], pairs[1][0]]);
+    // Leave mid-mismatch, then deal a new board.
+    await page.click('#btn-game-menu');
+    await page.evaluate(() => window.__deja.showScreen('menu'));
+    await pickDifficulty(page, 'insane');
+    const fresh = await lifeState(page);
+    check('a new board starts clean', () => {
+      assert.equal(fresh.moves, 0);
+      assert.equal(fresh.mistakes, 0);
+      assert.equal(fresh.message, 'Memorize the board — 8');
+      assert.equal(fresh.pending, 2, `${fresh.pending} gameplay timers pending: the old board left work behind`);
+    });
+    await page.waitForTimeout(1500);
+    const later = await lifeState(page);
+    check('the old board\'s pending turn never touches it', () => {
+      assert.equal(later.faceUp.length, 30, 'cards of the new board flipped down early');
+      assert.equal(later.mistakes, 0);
+    });
+    // Restart again mid-preview: the first preview's timers must not end the second.
+    await page.click('#btn-game-menu');
+    await page.evaluate(() => window.__deja.showScreen('menu'));
+    await pickDifficulty(page, 'insane');
+    await page.waitForTimeout(6500);
+    const second = await lifeState(page);
+    check('restarting mid-preview gives the new board its full memorize time', () => {
+      assert.ok(second.previewing, 'the new preview ended early, on the old one\'s schedule');
+      assert.equal(second.faceUp.length, 30);
+    });
+  });
+}
+
+// ----------------------------------------------------------------- worker ---
+
+const MENU_TRACK = 'Deja Vu - Main Menu (Vibe 1).mp3';
+
+async function controlledPage(browser, baseUrl) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const page = await context.newPage();
+  await page.goto(baseUrl, { waitUntil: 'load' });
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 20000 });
+  return { context, page };
+}
+
+async function cacheNames(page) {
+  return page.evaluate(() => caches.keys());
+}
+
+async function auditWorker(runner, browser) {
+  // Encoded names, out-of-scope requests and deduplicated media warming, on a
+  // server that counts what actually reaches it.
+  {
+    runner.group('worker/requests');
+    const seen = [];
+    const server = await startServer({ onRequest: (request) => seen.push(request) });
+    const { context, page } = await controlledPage(browser, server.baseUrl);
+    try {
+      const names = await cacheNames(page);
+      runner.check('cache is named for this scope', () => {
+        assert.ok(names.some((name) => /^deja-vu-v[\d.]+@\/DEJA-VU-MEMORY-GAME\/$/.test(name)), `caches: ${names.join(', ')}`);
+      });
+
+      const outside = page.waitForResponse((response) => response.url().endsWith('/outside-scope/probe.txt'));
+      await page.evaluate(() => fetch('/outside-scope/probe.txt').catch(() => null));
+      const outsideResponse = await outside;
+      runner.check('requests outside the scope go straight to the network', () => {
+        assert.equal(outsideResponse.fromServiceWorker(), false, 'the worker answered a request outside its scope');
+      });
+
+      // Drop the precached track, then let several range requests race for it.
+      const track = new URL(MENU_TRACK, server.baseUrl).href;
+      await page.evaluate(async (url) => {
+        const name = (await caches.keys()).find((key) => key.startsWith('deja-vu-'));
+        await (await caches.open(name)).delete(url);
+      }, track);
+      seen.length = 0;
+      const ranges = await page.evaluate(async (url) => Promise.all(
+        ['bytes=0-1', 'bytes=1024-2047', 'bytes=4096-8191', 'bytes=-64'].map(async (range) => {
+          const response = await fetch(url, { headers: { Range: range } });
+          await response.arrayBuffer();
+          return response.status;
+        }),
+      ), track);
+      const deadline = Date.now() + 15000;
+      let warmed = false;
+      while (!warmed && Date.now() < deadline) {
+        warmed = await page.evaluate(async (url) => {
+          const name = (await caches.keys()).find((key) => key.startsWith('deja-vu-'));
+          return Boolean(await (await caches.open(name)).match(url));
+        }, track);
+        if (!warmed) await page.waitForTimeout(200);
+      }
+      const forTrack = seen.filter((request) => request.pathname.endsWith(MENU_TRACK));
+      runner.check('uncached media is range-served online and warmed into the cache', () => {
+        assert.deepEqual(ranges, [206, 206, 206, 206]);
+        assert.ok(warmed, 'the full track never reached the cache');
+      });
+      runner.check('warming downloads the track once, however many range requests ask', () => {
+        const full = forTrack.filter((request) => !request.range).length;
+        assert.equal(full, 1, `${full} full downloads for ${forTrack.length - full} range requests`);
+      });
+
+      // Offline, under every spelling of the name.
+      await context.setOffline(true);
+      const offline = await page.evaluate(async () => {
+        const spellings = [
+          './Deja Vu - Main Menu (Vibe 1).mp3',
+          './Deja%20Vu%20-%20Main%20Menu%20(Vibe%201).mp3',
+          './Deja%20Vu%20-%20Main%20Menu%20%28Vibe%201%29.mp3',
+        ];
+        const out = {};
+        for (const spelling of spellings) {
+          const response = await fetch(spelling, { headers: { Range: 'bytes=10-19' } });
+          out[spelling] = { status: response.status, range: response.headers.get('Content-Range'), bytes: (await response.arrayBuffer()).byteLength };
+        }
+        const beyond = await fetch(spellings[0], { headers: { Range: 'bytes=999999999-' } });
+        out.unsatisfiable = { status: beyond.status, range: beyond.headers.get('Content-Range') };
+        return out;
+      });
+      for (const [spelling, result] of Object.entries(offline)) {
+        if (spelling === 'unsatisfiable') continue;
+        runner.check(`offline track as "${spelling}"`, () => {
+          assert.equal(result.status, 206, `answered ${result.status}`);
+          assert.equal(result.bytes, 10);
+          assert.match(result.range || '', /^bytes 10-19\/\d+$/);
+        });
+      }
+      runner.check('offline unsatisfiable range answers 416', () => {
+        assert.equal(offline.unsatisfiable.status, 416);
+        assert.match(offline.unsatisfiable.range || '', /^bytes \*\/\d+$/);
+      });
+    } finally {
+      await context.close();
+      await server.close();
+    }
+  }
+
+  // Update lifecycle: a new version installs and waits, a reload does not hand
+  // over, a cold start does; activation clears this app's older and legacy
+  // caches and leaves another scope's alone.
+  {
+    runner.group('worker/update');
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'deja-vu-update-'));
+    await cp(distDirectory, directory, { recursive: true });
+    const server = await startServer({ directory });
+    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    try {
+      let page = await context.newPage();
+      await page.goto(server.baseUrl, { waitUntil: 'load' });
+      await page.evaluate(() => navigator.serviceWorker.ready);
+      await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 20000 });
+      const [current] = (await cacheNames(page)).filter((name) => name.startsWith('deja-vu-'));
+      await page.evaluate(async () => {
+        for (const name of ['deja-vu-v0.1.0@/other-app/', 'deja-vu-v1.4.0', 'deja-vu-v1.0.0@/DEJA-VU-MEMORY-GAME/']) {
+          await (await caches.open(name)).put('/probe', new Response('probe'));
+        }
+      });
+
+      const source = await readFile(path.join(directory, 'sw.js'), 'utf8');
+      await writeFile(path.join(directory, 'sw.js'), source.replace(/const CACHE_VERSION = '([^']+)';/, "const CACHE_VERSION = '$1-next';"));
+      await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+      const waitingDeadline = Date.now() + 20000;
+      let state = {};
+      while (Date.now() < waitingDeadline) {
+        state = await page.evaluate(async () => {
+          const registration = await navigator.serviceWorker.getRegistration();
+          return { waiting: Boolean(registration?.waiting), names: await caches.keys() };
+        });
+        if (state.waiting) break;
+        await page.waitForTimeout(200);
+      }
+      runner.check('a new version installs and waits while the old one serves', () => {
+        assert.ok(state.waiting, 'no waiting worker after update()');
+        assert.ok(state.names.includes(current), 'the serving generation\'s cache was removed early');
+        assert.ok(state.names.some((name) => name.includes('-next@')), 'the new generation did not precache');
+      });
+
+      await page.reload({ waitUntil: 'load' });
+      const afterReload = await page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration())?.waiting));
+      runner.check('a reload does not hand over', () => assert.ok(afterReload, 'the new version took over on reload'));
+
+      // A cold start: every app page closed. Watch from a same-origin page the
+      // worker does not control, so nothing keeps the old version in use.
+      await page.close();
+      page = await context.newPage();
+      await page.goto(`${server.origin}/outside-scope/`, { waitUntil: 'load' });
+      const scope = new URL(server.baseUrl).pathname;
+      const activeDeadline = Date.now() + 20000;
+      let names = [];
+      let waiting = true;
+      while (Date.now() < activeDeadline) {
+        ({ names, waiting } = await page.evaluate(async (path) => ({
+          names: await caches.keys(),
+          waiting: Boolean((await navigator.serviceWorker.getRegistration(path))?.waiting),
+        }), scope));
+        if (!waiting && !names.includes(current)) break;
+        await page.waitForTimeout(200);
+      }
+      runner.check('a cold start activates the new version', () => {
+        assert.equal(waiting, false, 'still waiting after every page closed');
+        assert.ok(names.some((name) => name.includes('-next@')), `caches: ${names.join(', ')}`);
+      });
+      runner.check('activation clears this app\'s older and legacy caches only', () => {
+        assert.ok(!names.includes(current), 'the previous generation survived');
+        assert.ok(!names.includes('deja-vu-v1.0.0@/DEJA-VU-MEMORY-GAME/'), 'an older same-scope generation survived');
+        assert.ok(!names.includes('deja-vu-v1.4.0'), 'a pre-scope legacy cache survived');
+        assert.ok(names.includes('deja-vu-v0.1.0@/other-app/'), 'another scope\'s cache was deleted');
+      });
+      await page.goto(server.baseUrl, { waitUntil: 'load' });
+      await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 20000 });
+      const served = await page.evaluate(async () => {
+        const response = await fetch('./sw.js', { cache: 'no-store' }).catch(() => null);
+        return { controlled: Boolean(navigator.serviceWorker.controller), title: document.title, ok: Boolean(response?.ok) };
+      });
+      runner.check('the reopened app is served by the new version', () => {
+        assert.ok(served.controlled, 'the reopened app is not controlled');
+        assert.equal(served.title, 'DEJA VU by INSPIRE');
+      });
+    } finally {
+      await context.close();
+      await server.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+}
+
 // ------------------------------------------------------------------- main ---
 
 async function main() {
@@ -1441,9 +1952,13 @@ async function main() {
     if (SUITE_FILTER.has('desktop')) await auditDesktop(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('intro')) await auditIntroAspectRatio(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('mobile')) await auditMobile(runner, browser, server.baseUrl);
-    if (SUITE_FILTER.has('offline')) await auditOffline(runner, browser, server.baseUrl);
+    if (SUITE_FILTER.has('offline')) {
+      await auditOffline(runner, browser, server.baseUrl);
+      await auditWorker(runner, browser);
+    }
     if (SUITE_FILTER.has('sprites')) await auditSprites(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('loading')) await auditLoading(runner, browser, server.baseUrl);
+    if (SUITE_FILTER.has('lifecycle')) await auditLifecycle(runner, browser, server.baseUrl);
   } finally {
     await browser.close();
     await server.close();

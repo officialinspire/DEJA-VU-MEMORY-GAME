@@ -28,13 +28,15 @@ const CONTENT_TYPES = new Map([
 /**
  * Serves dist/ under SUBPATH on an ephemeral port, with the byte-range support
  * a real host provides, so the worker's own range handling is what is measured.
- * `directory` swaps in another build, e.g. an older checkout's dist/ to compare.
+ * `directory` swaps in another build, e.g. an older checkout's dist/ to compare;
+ * `onRequest` sees every request that reaches the server.
  */
-export async function startServer({ directory = distDirectory } = {}) {
+export async function startServer({ directory = distDirectory, onRequest = null } = {}) {
   const root = path.resolve(directory);
   const server = http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url || '/', 'http://localhost');
     const pathname = decodeURIComponent(requestUrl.pathname);
+    onRequest?.({ pathname, range: request.headers.range || '' });
     if (!pathname.startsWith(SUBPATH)) {
       response.writeHead(404, { 'Content-Type': 'text/plain' }).end('outside site root');
       return;

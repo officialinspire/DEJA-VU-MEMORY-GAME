@@ -13,14 +13,24 @@
 // old and new assets. A new worker precaches into a new cache and then waits:
 // it activates on the next cold start, once no page is controlled by the old
 // worker. Reloading a tab does not hand over, by design.
-const CACHE_VERSION = 'v1.4.0';
-const CACHE_NAME = `deja-vu-${CACHE_VERSION}`;
+//
+// SCOPE ISOLATION
+// Every site on an origin shares one Cache Storage (all of a user's GitHub
+// Pages project sites live on <user>.github.io), so the cache name carries
+// this worker's scope, activate only ever clears this app's own older
+// generations, and requests outside the scope are left to the network.
+const CACHE_VERSION = 'v1.5.0';
+const SCOPE_PATH = new URL('./', self.location).pathname;
 const CACHE_PREFIX = 'deja-vu-';
+const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}@${SCOPE_PATH}`;
+// Generations before v1.5.0 were named without a scope. They were only ever
+// deployed at one path, so they are cleared as this app's own.
+const LEGACY_CACHE = /^deja-vu-v\d+\.\d+\.\d+$/;
 
 const APP_SHELL = [
   './', './index.html', './styles.css', './deja-vu-backgrounds.css', './responsive-board.css',
   './matched-card-polish.css', './gameplay-preview.css', './results-ux.css',
-  './runtime-config.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
+  './runtime-config.js', './gameplay-clock.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
   './accessibility.js', './results-ux.js', './sprite-atlas.js', './save-integrity.js',
   './stats-integrity.js', './manifest.webmanifest', './card-flip-sprite-sheet.png',
   './logo.png', './inspiresoftwareintro.mp4',
@@ -69,7 +79,6 @@ const SHELL_BY_PATH = new Map(
     .filter((path) => path !== './')
     .map((path) => [path.replace(/^\.\//, ''), toAbsolute(path)])
 );
-const SCOPE_PATH = new URL('./', self.location).pathname;
 
 // A navigation to a deeper same-origin path is answered with the shell, and the
 // shell's relative asset URLs then resolve against that deeper path. Walk the
@@ -84,6 +93,21 @@ function shellFallbackUrl(url) {
   return null;
 }
 
+// One file can be asked for under differently encoded names: `%28` or `(`,
+// `%20` or a space the browser encodes. Cache keys use the URL parser's own
+// form, which is what decoding the path and handing it back to the parser gives.
+function canonicalUrl(href) {
+  const url = new URL(href);
+  try {
+    url.pathname = decodeURIComponent(url.pathname);
+  } catch (_) {
+    // A malformed escape: keep the path as it came.
+  }
+  url.search = '';
+  url.hash = '';
+  return url.href;
+}
+
 // Every lookup is pinned to the current generation's cache and ignores query
 // strings, so `./index.js?v=3` resolves to the precached `./index.js`.
 async function matchCached(request) {
@@ -94,6 +118,11 @@ async function matchCached(request) {
     url = new URL(typeof request === 'string' ? request : request.url);
   } catch (_) {
     return undefined;
+  }
+  const canonical = canonicalUrl(url.href);
+  if (canonical !== url.href.split(/[?#]/, 1)[0]) {
+    const encodedDifferently = await caches.match(canonical, { cacheName: CACHE_NAME });
+    if (encodedDifferently) return encodedDifferently;
   }
   const fallback = shellFallbackUrl(url);
   if (!fallback || fallback === url.href) return undefined;
@@ -175,11 +204,9 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(
-      keys
-        .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
-        .map((key) => caches.delete(key))
-    );
+    const ownOlder = (key) => key !== CACHE_NAME
+      && ((key.startsWith(CACHE_PREFIX) && key.endsWith(`@${SCOPE_PATH}`)) || LEGACY_CACHE.test(key));
+    await Promise.all(keys.filter(ownOlder).map((key) => caches.delete(key)));
     // Only reached once this generation's cache is fully populated, so the
     // first visit becomes offline-capable without a reload.
     await self.clients.claim();
@@ -252,7 +279,7 @@ function buildRangeResponse(rangeHeader, buffer, contentType) {
   return new Response(slice, { status: 206, statusText: 'Partial Content', headers });
 }
 
-async function handleRange(request) {
+async function handleRange(request, event) {
   const cached = await matchCached(request);
   if (cached) {
     try {
@@ -264,21 +291,30 @@ async function handleRange(request) {
   }
   try {
     // Online and not yet cached: let the server range-serve it, and warm the
-    // cache with a separate full copy for the next offline session.
+    // cache with a separate full copy for the next offline session. waitUntil
+    // keeps the worker alive until that copy is stored; it is allowed here
+    // because the respondWith() promise is still pending.
     const response = await fetch(request);
-    if (!cached) warmMediaCache(request);
+    if (!cached) event.waitUntil(warmMediaCache(request));
     return response;
   } catch (_) {
     return Response.error();
   }
 }
 
+// One full download per file at a time, however many range requests ask for
+// it: a media element issues several while it buffers and seeks.
+const warming = new Map();
+
 function warmMediaCache(request) {
-  const url = new URL(request.url);
-  url.search = '';
-  fetch(url.href, { cache: 'no-cache' })
-    .then((response) => (isCacheable(response) ? putCached(url.href, response) : null))
-    .catch(() => null);
+  const key = canonicalUrl(request.url);
+  if (!warming.has(key)) {
+    warming.set(key, fetch(key, { cache: 'no-cache' })
+      .then((response) => (isCacheable(response) ? putCached(key, response) : null))
+      .catch(() => null)
+      .finally(() => warming.delete(key)));
+  }
+  return warming.get(key);
 }
 
 self.addEventListener('fetch', (event) => {
@@ -294,6 +330,8 @@ self.addEventListener('fetch', (event) => {
   // Anything cross-origin is left to the browser; this app ships no external
   // dependencies, so nothing here should be cross-origin in the first place.
   if (url.origin !== self.location.origin) return;
+  // Another site on this origin is not ours to answer or to cache.
+  if (!url.pathname.startsWith(SCOPE_PATH)) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(handleNavigate(request));
@@ -301,7 +339,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (request.headers.has('range')) {
-    event.respondWith(handleRange(request));
+    event.respondWith(handleRange(request, event));
     return;
   }
 

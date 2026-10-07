@@ -169,16 +169,19 @@ document = {
   querySelectorAll(selector) { return selector === '.screen' ? [elements['screen-start'], elements['screen-intro'], elements['screen-menu'], elements['screen-game']] : []; },
 };
 
+// Fake timers with a fake clock: each timer remembers when it is due, and
+// flushing runs them in due order, moving time forward as it goes.
 const pendingTimers = new Map();
 let nextTimer = 1;
+let fakeNow = 0;
 const feedback = [];
 const storage = new Map();
 const runtime = {
   difficulties: {
-    easy: { label: 'Easy', rows: 3, cols: 4, pairs: 6 },
-    intermediate: { label: 'Intermediate', rows: 4, cols: 4, pairs: 8 },
-    advanced: { label: 'Advanced', rows: 4, cols: 5, pairs: 10 },
-    insane: { label: 'Insane', rows: 6, cols: 5, pairs: 15 },
+    easy: { label: 'Easy', rows: 3, cols: 4, pairs: 6, mismatchStudyMs: 1050 },
+    intermediate: { label: 'Intermediate', rows: 4, cols: 4, pairs: 8, mismatchStudyMs: 950 },
+    advanced: { label: 'Advanced', rows: 4, cols: 5, pairs: 10, mismatchStudyMs: 850 },
+    insane: { label: 'Insane', rows: 6, cols: 5, pairs: 15, mismatchStudyMs: 750 },
   },
   calculatePerformance(key, mistakes, elapsed) {
     const pairs = this.difficulties[key].pairs;
@@ -191,9 +194,9 @@ const runtime = {
 
 const window = {
   DEJA_VU_RUNTIME: runtime,
-  setTimeout(callback) {
+  setTimeout(callback, delay = 0) {
     const id = nextTimer++;
-    pendingTimers.set(id, callback);
+    pendingTimers.set(id, { callback, due: fakeNow + (Number(delay) || 0) });
     return id;
   },
   clearTimeout(id) { pendingTimers.delete(id); },
@@ -201,9 +204,19 @@ const window = {
   confirm() { return true; },
 };
 
+// The real gameplay clock, running on the fake timers above.
+const clockSandbox = { window, performance: { now: () => fakeNow }, Math, Number, Set };
+vm.runInNewContext(
+  `${fs.readFileSync('gameplay-clock.js', 'utf8').replace(/^export /gm, '')}\nthis.gameplayClock = gameplayClock;`,
+  clockSandbox,
+  { filename: 'gameplay-clock.js' },
+);
+const clock = clockSandbox.gameplayClock;
+
 const sandbox = {
   window,
   document,
+  gameplayClock: clock,
   localStorage: {
     getItem(key) { return storage.get(key) ?? null; },
     setItem(key, value) { storage.set(key, value); },
@@ -235,6 +248,7 @@ window.__DEJA_TEST__ = {
   setGame(nextGame) { game = nextGame; },
   setScreen(name) { currentScreen = name; },
   getGame() { return game; },
+  retire: beginGameGeneration,
 };`;
 vm.runInNewContext(testableIndex, sandbox, { filename: 'index.js' });
 
@@ -247,14 +261,32 @@ function makeCard(index, matched = false) {
   return card;
 }
 
+function nextTimerEntry() {
+  return [...pendingTimers.entries()].sort((left, right) => left[1].due - right[1].due)[0] || null;
+}
+
+function advance(ms) {
+  fakeNow += ms;
+}
+
+/** Runs timers in due order until no gameplay work is left. */
 function flushTimers(limit = 30) {
   let count = 0;
-  while (pendingTimers.size) {
+  while (clock.pendingTasks()) {
     assert.ok(count++ < limit, 'gameplay timer queue did not settle');
-    const [id, callback] = pendingTimers.entries().next().value;
+    const entry = nextTimerEntry();
+    assert.ok(entry, 'gameplay work is pending with no timer armed (still suspended?)');
+    const [id, timer] = entry;
     pendingTimers.delete(id);
-    callback();
+    fakeNow = Math.max(fakeNow, timer.due);
+    timer.callback();
   }
+}
+
+/** Ms of gameplay time until the next gameplay timer fires. */
+function nextGameplayDelay() {
+  const entry = nextTimerEntry();
+  return entry ? entry[1].due - fakeNow : null;
 }
 
 function gameState(patterns, options = {}) {
@@ -284,19 +316,31 @@ assert.deepEqual(feedback, ['select', 'select', 'match'], 'matching turn emits t
 
 api.flipCard(2);
 api.flipCard(3);
+assert.equal(nextGameplayDelay(), 1050, 'a mismatch stays up for the difficulty\'s study time');
+advance(400);
+api.pauseGame();
+assert.equal(clock.pendingTasks(), 1, 'pausing keeps the mismatch pending');
+assert.equal(pendingTimers.size, 0, 'a paused game holds no native timers at all');
+advance(5000);
+elements['pause-dialog'].close();
+clock.resume('pause');
+api.resumeGame();
+assert.equal(nextGameplayDelay(), 650, 'resuming continues the study time where it stopped');
+assert.equal(api.getGame().open.length, 2, 'the mismatch is still on the table after the pause');
 flushTimers();
 assert.equal(api.getGame().mistakes, 1, 'mismatch increments mistakes');
 assert.equal(api.getGame().open.length, 0, 'mismatch returns both cards');
 assert.deepEqual(
   feedback,
-  ['select', 'select', 'match', 'select', 'select', 'mistake'],
-  'mismatch turn emits two selects and one mistake cue'
+  ['select', 'select', 'match', 'select', 'select', 'mistake', 'tap'],
+  'mismatch turn emits two selects and one mistake cue (then the pause taps)'
 );
 
 api.pauseGame();
 assert.equal(api.getGame().paused, true, 'pause freezes the game');
 assert.equal(elements['pause-dialog'].open, true, 'pause dialog opens');
 elements['pause-dialog'].close();
+clock.resume('pause');
 api.resumeGame();
 assert.equal(api.getGame().paused, false, 'resume continues the game');
 
@@ -310,15 +354,25 @@ assert.equal(api.getGame().completed, true, 'last match completes the board');
 assert.equal(elements['complete-dialog'].open, true, 'completion dialog opens');
 assert.equal(elements['complete-grade'].textContent, 'EXCELLENT', 'completion rating renders');
 
+// A restart retires everything the old board still had pending.
+elements['card-grid'].cards = Array.from({ length: 12 }, (_, index) => makeCard(index));
+api.setGame(gameState([0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 0]));
+api.flipCard(0);
+api.flipCard(1);
+assert.equal(clock.pendingTasks(), 1, 'a mismatch is pending');
+api.retire();
+assert.equal(clock.pendingTasks(), 0, 'a new generation cancels the old board\'s pending turn');
+assert.equal(pendingTimers.size, 0, 'and its native timer');
+
 const cueCount = (name) => feedback.filter((cue) => cue === name).length;
-assert.equal(cueCount('select'), 6, 'each of six valid card openings emits one select cue');
+assert.equal(cueCount('select'), 8, 'each of eight valid card openings emits one select cue');
 assert.equal(cueCount('match'), 2, 'each resolved match emits one match cue');
-assert.equal(cueCount('mistake'), 1, 'the mismatch emits one mistake cue');
-assert.equal(cueCount('tap'), 1, 'pause emits one subtle tap cue');
+assert.equal(cueCount('mistake'), 2, 'each mismatch emits one mistake cue');
+assert.equal(cueCount('tap'), 2, 'each of two pauses emits one subtle tap cue');
 assert.equal(cueCount('complete'), 1, 'completion emits one cue');
 
 const smallestCards = Math.min(...viewportResults.map((result) => result.cardWidth));
 const scrollingCases = viewportResults.filter((result) => result.scrolls).length;
 console.log(`Responsive matrix: PASS (${viewports.length} viewports × ${boards.length} boards; smallest card ${smallestCards}px; ${scrollingCases} vertical-scroll cases)`);
-console.log('Gameplay flow: PASS (selection, match, mismatch, pause/resume, completion)');
+console.log('Gameplay flow: PASS (selection, match, mismatch, difficulty study time, pause freezes pending turns, restart cancels them, completion)');
 console.log('Keyboard, safe-area, dialog, orientation, and reduced-motion invariants: PASS');

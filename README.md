@@ -4,8 +4,8 @@
 
 ### Installing for offline play
 
-1. Open the site once with a working connection and let it finish loading. The precache is 28 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
-2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>` cache with 28 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
+1. Open the site once with a working connection and let it finish loading. The precache is 29 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
+2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>@/DEJA-VU-MEMORY-GAME/` cache with 29 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
 3. Install the app if you want a standalone window: **Chrome/Edge desktop** — the install icon in the address bar, or ⋮ → Cast, save and share → Install. **Android Chrome** — ⋮ → Add to Home screen. **iOS Safari** — Share → Add to Home Screen (Safari has no install prompt; this is the only route).
 4. You can now go fully offline. Launching from the home screen or the installed window works with no network, as does reloading the tab.
 
@@ -73,6 +73,16 @@ Run the build after changing any root HTML, JavaScript, CSS, manifest, icon, ima
 
 The build also audits every reference the hosted files make, resolving each the way a browser does on the GitHub Pages project subpath: HTML `src`/`href`/`poster` and the absolute social-preview URLs, CSS `url()` and `@import`, JavaScript imports and relative path strings (`new URL(…, import.meta.url)`, image sources, the worker's precache list, its registration), and the manifest's icons, `start_url` and `scope`. It fails on a missing file, a filename whose case differs from the file on disk (Pages is case-sensitive even where a dev machine is not), a path that escapes the subpath (`/logo.png`, `../`), a malformed or double percent-encoding (spaces may be written raw or as `%20`, but not `%2520`), an unquoted CSS `url()` with a space, and any asset the running app requests that is missing from the `sw.js` precache. Hosted files nothing references (`Deja-Vu-Instagram.png`, the legacy `deja-vu-theme.mp3`) are listed, not failed.
 
+## Gameplay timing
+
+All gameplay timing runs on one clock, `gameplay-clock.js`. Turn resolution (match 460 ms, mismatch study per difficulty: 1,050 / 950 / 850 / 750 ms, flip-back, completion dialog), the memorize preview and its countdown are scheduled on it explicitly. The global `setTimeout`/`setInterval` overrides that used to do this by matching magic delays are gone.
+
+- **Pausing freezes play.** While the pause dialog is open or the page is hidden, every pending gameplay timer is frozen with its remaining time and holds no native timer, so nothing runs or polls in the background. Resuming continues each one where it stopped: a mismatch keeps the rest of its study time, and the preview keeps the rest of its countdown, whether paused by button, Escape or hiding the page. Coming back to a hidden game opens the pause dialog as before.
+- **Stale work is cancelled.** A new board, a resumed board, the menu and completion cancel everything the old board had pending, the preview included. The session, turn and generation guards still drop anything that slips through.
+- **Score time is measured, not counted.** The clock accumulates play time from timestamps while a game is actually being played: not paused, hidden, previewing or finished. The shown time is updated as each whole second passes, with no interval to drift, and is exactly the time scored. Saves keep whole seconds in `elapsed` as before, plus `elapsedMs` for a precise resume.
+
+Music elements are unlocked one by one. A `play()` the browser refuses for want of a gesture is retried inside the next real (trusted) tap or key press. Element errors, such as a dropped connection or a decode failure, are retried three times with backoff (1 s, 2 s, 4 s), and again when the network comes back. Nothing plays while the page is hidden.
+
 ## Asset loading
 
 The card sprite sheet is the one download play cannot start without, so it goes first and everything else waits on it:
@@ -101,7 +111,17 @@ It covers:
 
 - **Asset loading.** A cold-cache first visit on a phone and a desktop must fetch the sheet once, start music and register the worker only after it arrives, deal a fully painted board, and end with the sheet in the worker's cache. The first tap must still start the intro and request both music loops while the sheet is held back. With the sheet delayed, a start must show the loading dialog (checked for fit on a small phone and a zoomed desktop) with no board, clock or preview, then deal a painted board with its full memorize time, counted once. A stalled sheet must offer a retry that starts the board. Escape and Cancel must back out without a game starting later. Continue must wait the same way and resume without a preview. A missing (404), unreachable, truncated or blank sheet must show the failure dialog with Try again focused, report the failure in the console, and recover on retry. An offline first visit must say it is offline. And a deploy missing the sheet must fail its worker install, naming the sheet, and leave the page uncontrolled. The offline suite additionally requires the offline board to show its card art.
 
-Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,loading`.
+- **Lifecycle.** In a real browser, with page visibility under the suite's control and every timer callback counted:
+  - Pausing with Escape during the memorize preview freezes its countdown, keeps the full memorize time and scores none of it.
+  - Pausing during a match, or during a mismatch's study time, freezes the turn; resuming continues the study time rather than skipping it.
+  - A hidden page freezes the turn and the score clock, and coming back opens the pause dialog.
+  - No timer fires at all while the game is paused or hidden.
+  - Score time is accurate to the second, excludes paused time, and is exactly the time scored at completion.
+  - Rapid taps open one card, a third and fourth card are refused while a pair resolves, and rapid pause toggling ends consistent.
+  - Restarting mid-turn or mid-preview leaves nothing behind for the old board.
+- **Service worker.** The cache is named for its scope. Requests outside the scope are not answered by the worker. An uncached track is range-served and warmed into the cache with exactly one full download for several racing range requests. Offline, the track answers every spelling of its name, and 416 for an unsatisfiable range. A new version installs and waits, survives a reload, and activates on a cold start. Activation clears this app's older and legacy caches but not another scope's.
+
+Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,loading,lifecycle`.
 
 ### Checking loading by hand
 
@@ -125,7 +145,9 @@ After that, everything works with no network: navigation returns the cached shel
 Other behavior worth knowing:
 
 - **Updates apply on the next cold start.** A new `sw.js` precaches into a new cache and then waits, so one page session is always served by a single cache generation and never mixes old and new assets. Close the app (or all tabs) and reopen it to pick up a new version; reloading a tab deliberately does not hand over.
-- **Bump `CACHE_VERSION` in `sw.js` for every deploy.** The cache name derives from it, and old `deja-vu-*` caches are deleted on activate. `npm test` pins the current value so a release cannot forget it.
+- **Bump `CACHE_VERSION` in `sw.js` for every deploy.** The cache name derives from it and from the worker's scope (`deja-vu-<version>@/DEJA-VU-MEMORY-GAME/`), and on activate this app's older generations are deleted: same-scope names, plus the unscoped `deja-vu-v1.x.x` names used before v1.5.0. `npm test` pins the current value so a release cannot forget it.
+- **Scope isolation.** Every GitHub Pages project site of an account shares one origin and one Cache Storage. The worker only answers requests inside its own scope, and only ever deletes its own caches, so another site on the same origin is untouched.
+- **Media warming.** A track that is not cached yet (say its precache failed) is range-served from the network while one full copy is downloaded into the cache for next time. That download happens once per file, however many range requests a media element makes, and `event.waitUntil` keeps the worker alive until it is stored. Cached tracks answer every spelling of their name (`%20` or a space, `%28` or `(`), and unsatisfiable ranges answer 416.
 - **A missing optional asset does not break the install.** Media and decorative artwork are precached, but a failure there is reported and retried on demand instead of aborting. Required are the HTML, CSS, JavaScript, manifest, and the card sprite sheet, since no board can be drawn without it. Required entries are fetched first and the media only once they are secured. The game stays playable when media fails: audio errors are swallowed and a failed intro video is simply skipped.
 - **The precache revalidates rather than re-downloads.** Entries are fetched with `cache: 'no-cache'`: a new generation never stores a stale copy, and on a host that sends `ETag`/`Last-Modified` validators, as GitHub Pages does, a file the page has just downloaded (the sprite sheet on a first visit) comes back as a 304 instead of a second download.
 - **Failures are visible in development.** A failed registration logs to the page console, and the worker reports precache problems both to its own console and as a message to any open page.
@@ -159,13 +181,14 @@ Other behavior worth knowing:
 - `index.js` — game rules, screen flow, persistence, statistics, and controls
 - `audio-manager.js` — reusable scene music, crossfades, and mobile audio unlock
 - `feedback-manager.js` — synthesized UI cues and guarded mobile vibration feedback
+- `gameplay-clock.js` — pausable gameplay time: turn and preview timers that freeze with the game, and the score clock
 - `sprite-atlas.js` — measured card rectangles in the sprite sheet, and each card side's canvas, painted at the card's real pixel size from a bounded cache of sized crops
 - `sw.js` / `manifest.webmanifest` — offline and installable web app support
 - `scripts/build-dist.mjs` — deterministic `dist/` build and parity validation
 - `scripts/serve-dist.mjs` — dependency-free local static server with media range support
 - `scripts/verify-responsive.mjs` — dependency-free viewport, input-flow, and accessibility regression checks
 - `scripts/verify-release-candidate.mjs` — dependency-free scoring, audio, haptics, and app-shell audit
-- `scripts/verify-browser.mjs` — rendered layout, viewport-fit, offline, and card sprite regression suite
+- `scripts/verify-browser.mjs` — rendered layout, viewport-fit, offline and service-worker, card sprite, asset loading, and gameplay lifecycle regression suite
 - `scripts/generate-icons.mjs` — regenerates the PWA icons from the card back in the sprite sheet
 - `scripts/browser-harness.mjs` / `scripts/browser-probes.js` — Chromium discovery, subpath test server, and the in-page measurement helpers
 - `scripts/sprite-probes.js` / `scripts/measure-sprite-atlas.mjs` — canvas instrumentation and sprite crop checks for the browser suite, and the sprite cost meter
