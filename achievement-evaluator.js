@@ -21,7 +21,7 @@
 // and scoring, and speed goals only count wins within a mistake limit. A
 // worse game never unlocks anything a better one would not.
 
-import { DIFFICULTY_KEYS, dayNumber } from './progress-model.js';
+import { DIFFICULTY_KEYS, createEmptyProgress, dayNumber } from './progress-model.js';
 import { recordCompletion } from './progress-evaluator.js';
 import { speedMistakeLimit } from './achievement-catalog.js';
 
@@ -141,6 +141,22 @@ export function recordCompletionAndAward(progress, detail, catalog, runtime, now
   if (!result.recorded) return { progress, recorded: false, reason: result.reason, unlocked: [] };
   const awarded = awardCompletion(result.progress, result.completion, catalog, runtime, now);
   return { progress: awarded.progress, recorded: true, reason: result.reason, unlocked: awarded.unlocked, runId: result.completion.runId };
+}
+
+/**
+ * The player's own reset of achievement progress, confirmed in the UI: every
+ * unlock, and every total, streak and best the achievements are measured on,
+ * starts over. The ledger stays, so a replayed old completion still cannot
+ * count, and nothing is backfilled again. The legacy statistics are a
+ * separate record and are untouched; a statistics reset, by contrast, keeps
+ * unlocks (progress-evaluator.js).
+ */
+export function resetAchievementProgress(progress, at) {
+  const next = createEmptyProgress();
+  next.recordedRuns = [...progress.recordedRuns];
+  next.resetAt = progress.resetAt;
+  next.achievements.resetAt = timestamp(at);
+  return { progress: next, recorded: true, reason: 'achievements reset', unlocked: [] };
 }
 
 // ---------------------------------------------------------------- backfill ---

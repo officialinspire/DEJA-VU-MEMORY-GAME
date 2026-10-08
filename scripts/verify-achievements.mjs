@@ -19,6 +19,7 @@ import {
   metricValue,
   provenByStatistics,
   recordCompletionAndAward,
+  resetAchievementProgress,
 } from '../achievement-evaluator.js';
 import {
   DIFFICULTY_KEYS,
@@ -408,6 +409,21 @@ function verifyAwardOnce() {
   assert.deepEqual(progressOf(createEmptyProgress())['wins-1'], [0, 0]);
   const winsOne = shown.find((item) => item.id === 'wins-1');
   assert.deepEqual([winsOne.unlocked, winsOne.progress, winsOne.unlockedAt], [true, 1, 1_780_000_123_456]);
+
+  // The player's own reset of achievement progress: everything the
+  // achievements stand on starts over, except the ledger.
+  const earned = second.progress;
+  const cleared = resetAchievementProgress({ ...earned, resetAt: 1_780_000_000_000 }, NOW);
+  assert.deepEqual([cleared.recorded, cleared.unlocked], [true, []]);
+  assert.deepEqual(cleared.progress.achievements, { ...createEmptyProgress().achievements, resetAt: NOW }, 'unlocks, bests and days start over');
+  assert.deepEqual(cleared.progress.totals, createEmptyProgress().totals, 'and the totals they are measured on');
+  assert.deepEqual(cleared.progress.recordedRuns, earned.recordedRuns, 'the ledger stays');
+  assert.equal(cleared.progress.resetAt, 1_780_000_000_000, 'the statistics reset time is not this one');
+  assert.equal(cleared.progress.legacy, null, 'nothing is backfilled again');
+  assert.equal(play(cleared.progress, first).reason, 'duplicate', 'a replayed old completion still cannot count');
+  const fresh = play(cleared.progress, completion());
+  assert.ok(fresh.unlocked.includes('wins-1'), 'achievements can be earned again after this reset');
+  assert.equal(resetAchievementProgress(earned, 'soon').progress.achievements.resetAt, null);
 }
 
 // ------------------------------------- no reward for spam or worse play ---
@@ -556,8 +572,11 @@ function verifyModel() {
   assert.deepEqual(read.progress.achievements.bests.insane, { fewestMistakes: 0, fastestSharpWin: 30, fastestPerfectWin: 30, topScore: 14000 }, 'a perfect win is within the speed limit too');
   assert.deepEqual(read.progress.achievements.bests.advanced, { fewestMistakes: null, fastestSharpWin: null, fastestPerfectWin: null, topScore: null });
   assert.deepEqual(read.progress.achievements.day, { key: '2026-05-04', difficulties: ['easy', 'insane'], most: 4 });
-  const noDay = readProgress(JSON.stringify({ ...createEmptyProgress(), achievements: { day: { key: '2026-02-30', difficulties: ['easy'], most: 1 } } }));
+  const noDay = readProgress(JSON.stringify({ ...createEmptyProgress(), achievements: { day: { key: '2026-02-30', difficulties: ['easy'], most: 1 }, resetAt: -4 } }));
   assert.deepEqual(noDay.progress.achievements.day, { key: null, difficulties: [], most: 1 });
+  assert.equal(noDay.progress.achievements.resetAt, null, 'an invalid reset time is dropped');
+  const resetKept = { ...createEmptyProgress(), achievements: { ...createEmptyProgress().achievements, resetAt: 1_780_000_000_000 } };
+  assert.deepEqual(readProgress(JSON.stringify(resetKept)), { progress: resetKept, status: 'ok' });
   const clean = play(createEmptyProgress(), completion()).progress;
   assert.deepEqual(readProgress(JSON.stringify(clean)), { progress: clean, status: 'ok' }, 'a record with unlocks reads back as is');
   assert.equal(readProgress(JSON.stringify({ ...clean, version: 3 })).status, 'newer');
@@ -605,6 +624,7 @@ async function verifyTracker() {
   assert.ok(Object.hasOwn(backfilled, 'speed-easy-2') && Object.hasOwn(backfilled, 'perfect-1'), 'backfilled on load');
   assert.ok(Object.values(backfilled).every((award) => award.runId === null && Number.isSafeInteger(award.at)));
   assert.deepEqual(tracker.unlocks(), [], 'a backfill is not announced as a new unlock');
+  assert.deepEqual(tracker.getSessionBackfill().sort(), Object.keys(backfilled).sort(), 'but reported once, for this page load');
 
   const list = tracker.getAchievements();
   assert.equal(list.length, 100);
@@ -642,6 +662,7 @@ async function verifyTracker() {
   const snapshot = storage.data.get(PROGRESS_KEY);
   tracker = await loadTracker(storage);
   assert.equal(storage.data.get(PROGRESS_KEY), snapshot, 'a reload changes nothing');
+  assert.deepEqual(tracker.getSessionBackfill(), [], 'and reports no backfill');
   tracker.complete(win);
   assert.deepEqual(tracker.unlocks(), [], 'a replay after a reload awards nothing');
 
@@ -650,6 +671,20 @@ async function verifyTracker() {
   assert.deepEqual(stored(storage).achievements.unlocked, unlockedNow);
   assert.equal(stored(storage).totals.wins, 0);
   assert.deepEqual(tracker.unlocks(), [], 'a reset unlocks nothing');
+
+  // Resetting achievements, confirmed on the Achievements screen, clears them
+  // and leaves the statistics record alone.
+  const statsBefore = storage.data.get(STATS_KEY);
+  tracker.emit('deja-vu:achievements-reset', { at: NOW + 5 });
+  assert.deepEqual(stored(storage).achievements.unlocked, {});
+  assert.equal(stored(storage).achievements.resetAt, NOW + 5);
+  assert.equal(storage.data.get(STATS_KEY), statsBefore, 'statistics untouched');
+  const afterReset = tracker.events.filter((event) => event.type === 'deja-vu:progress-updated').at(-1).detail;
+  assert.deepEqual([afterReset.cause, afterReset.unlocked], ['achievements reset', []]);
+  tracker.complete(win);
+  assert.deepEqual(stored(storage).achievements.unlocked, {}, 'an old run still cannot earn anything');
+  tracker.complete(completion({ completedAt: NOW + 10 }));
+  assert.equal(stored(storage).achievements.unlocked['wins-1'].at, NOW + 10, 'a new one can');
 
   // A version-1 record is migrated once, at load.
   const v1 = createEmptyProgress();

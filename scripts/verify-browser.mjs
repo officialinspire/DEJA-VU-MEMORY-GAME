@@ -14,7 +14,12 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import vm from 'node:vm';
 import { chromium } from 'playwright';
+
+import { buildAchievementCatalog } from '../achievement-catalog.js';
+import { recordCompletionAndAward } from '../achievement-evaluator.js';
+import { createEmptyProgress } from '../progress-model.js';
 
 import {
   createRunner,
@@ -30,7 +35,7 @@ const SPRITE_PROBES_PATH = path.join(rootDirectory, 'scripts', 'sprite-probes.js
 const BASELINE_PATH = path.join(rootDirectory, 'scripts', 'mobile-layout-baseline.json');
 const UPDATE_BASELINE = process.argv.includes('--update-baseline');
 // --suite=desktop,offline narrows a run while iterating; the default is all.
-const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites', 'loading', 'lifecycle', 'progress'];
+const ALL_SUITES = ['desktop', 'intro', 'mobile', 'offline', 'sprites', 'loading', 'lifecycle', 'progress', 'achievements'];
 const SUITE_FILTER = (() => {
   const flag = process.argv.find((arg) => arg.startsWith('--suite='));
   if (!flag) return new Set(ALL_SUITES);
@@ -74,7 +79,7 @@ const SCREEN_ESSENTIALS = {
   start: ['.start-logo', '.brand-start', '.start-prompt'],
   intro: ['#intro-video', '#btn-skip-intro'],
   menu: [
-    '.brand', '#btn-new-game', '#btn-continue', '#btn-statistics',
+    '.brand', '#btn-new-game', '#btn-continue', '#btn-statistics', '#btn-achievements',
     '#btn-how-to-play', '#btn-settings', '.menu-footer a',
   ],
   game: [
@@ -87,6 +92,10 @@ const SCREEN_ESSENTIALS = {
     '#stats-perfect', '#stats-best-score', '#btn-reset-stats',
   ],
   help: ['[data-back-menu]', '#help-title', '.help-copy li', '#score-explainer'],
+  achievements: [
+    '[data-back-menu]', '#achievements-title', '#achievements-unlocked', '.filter-chip',
+    '.achievement-name', '.achievement-status', '#btn-reset-achievements',
+  ],
   settings: [
     '[data-back-menu]', '#settings-title',
     '#setting-music', '#setting-music-volume', '#setting-sfx',
@@ -106,7 +115,32 @@ const DIALOG_ESSENTIALS = {
     '#complete-moves', '#complete-mistakes', '#complete-time', '#complete-score',
     '#btn-play-again', '#btn-complete-menu',
   ],
+  'reset-achievements-dialog': [
+    '#reset-achievements-title', '#reset-achievements-message', '#reset-achievements-kept',
+    '#btn-confirm-reset-achievements', '#btn-keep-achievements',
+  ],
 };
+// The results of a game that unlocked achievements carry one more line.
+const COMPLETE_WITH_UNLOCKS = [...DIALOG_ESSENTIALS['complete-dialog'], '#complete-achievements', '.completion-achievement-names'];
+
+// Stand-ins for what the tracker announces, for checks that only need the
+// presentation: ids, names and categories shaped like getAchievements().
+function fakeAchievements(count, prefix = 'fake') {
+  const categories = ['wins', 'perfect', 'speed', 'difficulty', 'score', 'pairs', 'challenge', 'daily-streak', 'perfect-streak'];
+  return Array.from({ length: count }, (_, index) => ({
+    id: `${prefix}-${index}`,
+    name: `${prefix} achievement ${index + 1}`,
+    requirement: 'A requirement.',
+    category: categories[index % categories.length],
+    unlocked: true,
+  }));
+}
+
+function announceUnlocks(page, achievements, cause = 'test') {
+  return page.evaluate(([list, why]) => window.dispatchEvent(new CustomEvent('deja-vu:achievements-unlocked', {
+    detail: { cause: why, runId: null, achievements: list },
+  })), [achievements, cause]);
+}
 
 // Screens with no scroll container of their own: content has to fit outright,
 // because #app clips anything that does not.
@@ -255,14 +289,24 @@ async function auditDesktop(runner, browser, baseUrl) {
       await auditView(runner, page, `${label} complete dialog`, DIALOG_ESSENTIALS['complete-dialog'], DESKTOP_MUST_FIT);
       await page.evaluate(() => window.__deja.closeDialogs());
 
+      // Announced while the board is up, as a real completion is.
+      await announceUnlocks(page, fakeAchievements(4), 'completion');
+      await page.evaluate(() => window.__deja.openDialog('complete-dialog'));
+      await auditView(runner, page, `${label} complete dialog with achievements`, COMPLETE_WITH_UNLOCKS, DESKTOP_MUST_FIT);
+      await page.evaluate(() => window.__deja.closeDialogs());
+
       await page.evaluate(() => window.__deja.openDialog('art-dialog'));
       await auditView(runner, page, `${label} card-art dialog`, DIALOG_ESSENTIALS['art-dialog'], DESKTOP_MUST_FIT);
       await page.evaluate(() => window.__deja.closeDialogs());
 
-      for (const screen of ['statistics', 'help', 'settings']) {
+      for (const screen of ['statistics', 'help', 'settings', 'achievements']) {
         await page.evaluate((name) => window.__deja.showScreen(name), screen);
         await auditView(runner, page, `${label} ${screen}`, SCREEN_ESSENTIALS[screen]);
       }
+
+      await page.evaluate(() => window.__deja.openDialog('reset-achievements-dialog'));
+      await auditView(runner, page, `${label} reset-achievements dialog`, DIALOG_ESSENTIALS['reset-achievements-dialog'], DESKTOP_MUST_FIT);
+      await page.evaluate(() => window.__deja.closeDialogs());
 
       await context.close();
     }
@@ -641,6 +685,25 @@ async function auditOffline(runner, browser, baseUrl) {
     assert.ok(Number(completion.score.replace(/,/g, '')) > 0, `completion score was "${completion.score}"`);
   });
   await auditView(runner, page, 'offline complete dialog', DIALOG_ESSENTIALS['complete-dialog']);
+
+  // The game just won offline is credited, and the Achievements screen and
+  // its modules come from the cache.
+  const offlineAchievements = await page.evaluate(() => ({
+    highlight: !document.querySelector('#complete-achievements').hidden,
+    rows: document.querySelectorAll('#achievement-list .achievement').length,
+    unlocked: Object.keys(JSON.parse(localStorage.getItem('inspireDejaVu:v1:progress') || '{}').achievements?.unlocked || {}).length,
+  }));
+  await page.evaluate(() => window.__deja.showScreen('achievements'));
+  const offlineScreen = await page.evaluate(() => ({
+    rows: document.querySelectorAll('#achievement-list .achievement').length,
+    count: document.querySelector('#achievements-unlocked').textContent,
+  }));
+  runner.check('offline win unlocks achievements, shown on an offline Achievements screen', () => {
+    assert.ok(offlineAchievements.unlocked > 0, 'nothing unlocked offline');
+    assert.ok(offlineAchievements.highlight, 'the results did not highlight the unlocks');
+    assert.equal(offlineScreen.rows, 100);
+    assert.equal(offlineScreen.count, String(offlineAchievements.unlocked));
+  });
 
   const networkErrors = consoleErrors.filter((text) => /Failed to load|net::ERR|ERR_INTERNET/.test(text));
   runner.check('offline run made no failed network requests', () => {
@@ -2370,6 +2433,553 @@ async function auditProgress(runner, browser, baseUrl) {
   });
 }
 
+// ----------------------------------------------------------- achievements ---
+
+// A record with a handful of real unlocks, earned through the evaluator from
+// valid completions, for the views that need some of each state.
+async function seededAchievementRecord() {
+  const runtimeWindow = {};
+  vm.runInNewContext(await readFile(path.join(rootDirectory, 'runtime-config.js'), 'utf8'), {
+    window: runtimeWindow, document: { querySelector: () => null }, Number, Object, Math,
+  });
+  const runtime = runtimeWindow.DEJA_VU_RUNTIME;
+  const catalog = buildAchievementCatalog(runtime);
+  const games = [['easy', 0, 14, '2026-10-01'], ['easy', 1, 25, '2026-10-02'], ['intermediate', 0, 30, '2026-10-03'], ['insane', 3, 70, '2026-10-04']];
+  let progress = createEmptyProgress();
+  games.forEach(([difficultyKey, mistakes, seconds, day], index) => {
+    const { pairs } = runtime.difficulties[difficultyKey];
+    progress = recordCompletionAndAward(progress, {
+      runId: `run-seeded-${index + 1}000`, difficultyKey, pairs, moves: pairs + mistakes, mistakes, perfect: !mistakes,
+      elapsed: seconds, elapsedMs: seconds * 1000, score: runtime.calculateScore(difficultyKey, mistakes, seconds),
+      bestMatchChain: mistakes ? Math.ceil(pairs / (mistakes + 1)) : pairs, finalMatchChain: mistakes ? 1 : pairs,
+      day, completedAt: Date.parse(`${day}T12:00:00Z`),
+    }, catalog, runtime, 0).progress;
+  });
+  return JSON.stringify(progress);
+}
+
+async function enterMenu(page) {
+  await page.evaluate((url) => window.__deja.useIntroFixture(url), INTRO_FIXTURE);
+  await page.click('#screen-start');
+  await page.waitForFunction(() => document.querySelector('#screen-menu').classList.contains('is-active'), null, { timeout: 10000 });
+  await page.evaluate(() => window.__deja.settle());
+}
+
+async function openAchievements(page) {
+  await page.click('#btn-achievements');
+  await page.waitForFunction(() => document.querySelector('#screen-achievements').classList.contains('is-active'), null, { timeout: 5000 });
+  await page.evaluate(() => window.__deja.settle());
+}
+
+/** The notice on screen, once it has finished arriving, or null. */
+async function shownNotice(page, timeout = 4000) {
+  try {
+    await page.waitForFunction(() => document.querySelector('.achievement-toast.is-shown'), null, { timeout });
+  } catch (_) {
+    return null;
+  }
+  await page.waitForTimeout(300);
+  return page.evaluate(() => {
+    const toast = document.querySelector('.achievement-toast.is-shown');
+    if (!toast) return null;
+    const rect = toast.getBoundingClientRect();
+    const style = getComputedStyle(toast);
+    return {
+      eyebrow: toast.querySelector('.achievement-toast-eyebrow').textContent,
+      title: toast.querySelector('.achievement-toast-title').textContent,
+      count: Number(toast.dataset.count),
+      source: toast.dataset.source,
+      placement: document.querySelector('#achievement-toasts').dataset.placement,
+      rect: { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right },
+      viewport: { width: innerWidth, height: innerHeight },
+      transition: style.transitionDuration,
+      transform: style.transform,
+      focusInside: toast.contains(document.activeElement),
+      live: document.querySelector('#achievement-live').textContent,
+    };
+  });
+}
+
+const noticeCount = (page) => page.evaluate(() => document.querySelectorAll('.achievement-toast').length);
+
+function rectsOverlap(a, b) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+const elementRects = (page, selector) => page.evaluate((query) => [...document.querySelectorAll(query)]
+  .filter((node) => node.offsetParent !== null)
+  .map((node) => {
+    const rect = node.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+  }), selector);
+
+const screenRows = (page) => page.evaluate(() => [...document.querySelectorAll('#achievement-list .achievement')].map((row) => ({
+  id: row.dataset.id,
+  category: row.dataset.category,
+  state: row.dataset.state,
+  shown: !row.hidden && !row.closest('section').hidden,
+  detail: row.querySelector('.achievement-detail').textContent,
+  datetime: row.querySelector('time')?.dateTime || null,
+})));
+
+const pressedFilters = (page) => page.evaluate(() => [...document.querySelectorAll('#screen-achievements .filter-chip[aria-pressed="true"]')]
+  .map((chip) => chip.dataset.category ?? `state:${chip.dataset.state}`));
+
+const focusedId = (page) => page.evaluate(() => document.activeElement?.id || document.activeElement?.className || document.activeElement?.tagName);
+
+async function auditAchievements(runner, browser, baseUrl) {
+  const seeded = await seededAchievementRecord();
+  const scenario = async (label, options, body) => {
+    runner.group(`achievements/${label}`);
+    const { context, page, errors } = await progressPage(browser, baseUrl, options);
+    const check = (name, fn) => runner.check(`${label} — ${name}`, fn);
+    try {
+      await body(page, check, context);
+      check('no page errors', () => assert.deepEqual(errors, []));
+    } catch (error) {
+      check('runs to completion', () => {
+        throw new Error(String(error?.message || error).split('\n')[0]);
+      });
+    } finally {
+      await context.close();
+    }
+  };
+
+  // Phones and tablets: every view reachable, notices clear of the menu and
+  // inside the safe area, the results highlight within its dialog.
+  for (const viewport of MOBILE_VIEWPORTS) {
+    const label = `layout ${viewport.name}`;
+    runner.group(`achievements/${label}`);
+    const context = await browser.newContext({
+      viewport: { width: viewport.width, height: viewport.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, serviceWorkers: 'block',
+    });
+    await context.addInitScript(progressProbes, { seed: { [PROGRESS_STORE]: seeded } });
+    await context.addInitScript({ path: PROBES_PATH });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => {
+      if (!/reading 'scope'/.test(String(error))) errors.push(String(error));
+    });
+    const check = (name, fn) => runner.check(`${label} — ${name}`, fn);
+    try {
+      await page.goto(baseUrl, { waitUntil: 'load' });
+      await enterMenu(page);
+      await auditView(runner, page, `${label} menu`, SCREEN_ESSENTIALS.menu);
+      await openAchievements(page);
+      await auditView(runner, page, `${label} achievements`, SCREEN_ESSENTIALS.achievements);
+
+      await page.click('#btn-reset-achievements');
+      await page.waitForFunction(() => document.querySelector('#reset-achievements-dialog').open);
+      const resetFocus = await focusedId(page);
+      check('the reset confirmation opens on its safe choice', () => assert.equal(resetFocus, 'btn-keep-achievements'));
+      await auditView(runner, page, `${label} reset dialog`, DIALOG_ESSENTIALS['reset-achievements-dialog']);
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('#reset-achievements-dialog').open);
+      await page.waitForTimeout(100);
+      const afterEscape = await focusedId(page);
+      const stillSeeded = await page.evaluate((key) => localStorage.getItem(key), PROGRESS_STORE);
+      check('Escape cancels it, back on the reset button, nothing reset', () => {
+        assert.equal(afterEscape, 'btn-reset-achievements');
+        assert.deepEqual(JSON.parse(stillSeeded).achievements.unlocked, JSON.parse(seeded).achievements.unlocked);
+      });
+
+      await page.click('#screen-achievements [data-back-menu]');
+      await page.waitForFunction(() => document.querySelector('#screen-menu').classList.contains('is-active'));
+      await page.evaluate(() => window.__deja.settle());
+      // As a player arrives at it (the audit above scrolled it to the end).
+      await page.evaluate(() => document.querySelector('#screen-menu').scrollTo(0, 0));
+      const before = await focusedId(page);
+      await announceUnlocks(page, fakeAchievements(3));
+      const notice = await shownNotice(page);
+      const buttons = await elementRects(page, '.menu-nav button');
+      check('a notice over the menu takes no focus and covers no menu button', () => {
+        assert.ok(notice, 'no notice appeared');
+        assert.equal(notice.placement, 'top');
+        assert.equal(notice.focusInside, false);
+        assert.ok(notice.rect.left >= 0 && notice.rect.right <= notice.viewport.width && notice.rect.top >= 0, 'outside the viewport');
+        assert.ok(buttons.every((button) => !rectsOverlap(button, notice.rect)), 'covers a menu button');
+        assert.match(notice.live, /3 achievements unlocked/);
+      });
+      const after = await focusedId(page);
+      check('focus stays where it was', () => assert.equal(after, before));
+      await page.evaluate(() => {
+        document.documentElement.style.setProperty('--safe-top', '47px');
+        document.documentElement.style.setProperty('--safe-left', '30px');
+        document.documentElement.style.setProperty('--safe-right', '30px');
+      });
+      const inset = await page.evaluate(() => {
+        const rect = document.querySelector('.achievement-toast').getBoundingClientRect();
+        return { top: rect.top, left: rect.left, right: innerWidth - rect.right };
+      });
+      check('and stays inside the safe area', () => {
+        assert.ok(inset.top >= 47, `top ${inset.top}`);
+        assert.ok(inset.left >= 30 && inset.right >= 30, `sides ${inset.left}/${inset.right}`);
+      });
+      await page.evaluate(() => ['--safe-top', '--safe-left', '--safe-right'].forEach((name) => document.documentElement.style.removeProperty(name)));
+      await page.click('.achievement-toast-close');
+      await page.waitForFunction(() => !document.querySelector('.achievement-toast'), null, { timeout: 2000 });
+
+      // A completion's unlocks, announced while the board is up.
+      await page.evaluate(() => window.__deja.showScreen('game'));
+      await announceUnlocks(page, fakeAchievements(5, 'run'), 'completion');
+      await page.evaluate(() => window.__deja.openDialog('complete-dialog'));
+      await auditView(runner, page, `${label} results with achievements`, COMPLETE_WITH_UNLOCKS);
+      const noticesUnderResults = await noticeCount(page);
+      check('no notice is shown with the results', () => assert.equal(noticesUnderResults, 0));
+      await page.evaluate(() => window.__deja.closeDialogs());
+      check('no page errors', () => assert.deepEqual(errors, []));
+    } catch (error) {
+      check('runs to completion', () => {
+        throw new Error(String(error?.message || error).split('\n')[0]);
+      });
+    } finally {
+      await context.close();
+    }
+  }
+
+  await scenario('awards in play', {}, async (page, check) => {
+    await enterMenu(page);
+    await freshBoard(page);
+    await finishBoard(page);
+    const [completion] = await progressEvents(page, 'deja-vu:completion');
+    const progress = await storedJson(page, PROGRESS_STORE);
+    const earned = unlockedBy(progress, completion.runId);
+    const listed = await trackedAchievements(page);
+    const names = listed.filter((item) => earned.includes(item.id)).map((item) => item.name);
+    const results = await page.evaluate(() => ({
+      shown: !document.querySelector('#complete-achievements').hidden,
+      heading: document.querySelector('#complete-achievements strong')?.textContent,
+      names: document.querySelector('.completion-achievement-names')?.textContent,
+      describedBy: document.querySelector('#complete-dialog').getAttribute('aria-describedby'),
+      focus: document.activeElement?.id,
+      notices: document.querySelectorAll('.achievement-toast').length,
+    }));
+    check('the results highlight exactly what this game unlocked', () => {
+      assert.ok(earned.length >= 5, `only ${earned.length} unlocked`);
+      assert.equal(results.shown, true);
+      assert.equal(results.heading, `${earned.length} achievements unlocked:`);
+      for (const name of names) assert.ok(results.names.includes(name), `${name} is missing`);
+      assert.match(results.describedBy, /complete-achievements/, 'not part of the dialog description');
+    });
+    check('without taking focus from Play Again or showing a notice', () => {
+      assert.equal(results.focus, 'btn-play-again');
+      assert.equal(results.notices, 0);
+    });
+    await page.click('#btn-complete-menu');
+    await page.waitForTimeout(800);
+    const repeated = await noticeCount(page);
+    check('unlocks shown in the results are not repeated as a notice', () => assert.equal(repeated, 0));
+
+    await openAchievements(page);
+    const scene = await page.evaluate(async () => (await import('./audio-manager.js')).getMusicState().scene);
+    const rows = await screenRows(page);
+    const count = await page.textContent('#achievements-unlocked');
+    const day = new Date(completion.completedAt).toISOString().slice(0, 10);
+    check('the screen plays the menu music and shows the unlocks with their dates', () => {
+      assert.equal(scene, 'menu');
+      assert.equal(count, String(earned.length));
+      assert.equal(rows.length, 100);
+      const unlockedRows = rows.filter((row) => row.state === 'unlocked');
+      assert.deepEqual(unlockedRows.map((row) => row.id).sort(), earned);
+      assert.ok(unlockedRows.every((row) => row.datetime?.startsWith(day)), 'an unlock date is missing or wrong');
+      assert.ok(rows.filter((row) => row.state === 'locked').every((row) => row.detail.length > 0), 'a locked row shows no progress');
+    });
+
+    await page.click('.achievement-state-filters [data-state="unlocked"]');
+    let shown = (await screenRows(page)).filter((row) => row.shown);
+    check('the Unlocked filter shows only unlocked ones', () => {
+      assert.equal(shown.length, earned.length);
+      assert.ok(shown.every((row) => row.state === 'unlocked'));
+    });
+    await page.click('.achievement-filters [data-category="speed"]');
+    shown = (await screenRows(page)).filter((row) => row.shown);
+    const status = await page.textContent('#achievements-filter-status');
+    check('a category narrows it further, and the change is announced', () => {
+      assert.ok(shown.length > 0 && shown.every((row) => row.category === 'speed' && row.state === 'unlocked'));
+      assert.match(status, new RegExp(`Showing ${shown.length} unlocked Speed achievement`));
+    });
+    await page.focus('.achievement-filters [data-category="all"]');
+    await page.keyboard.press('ArrowRight');
+    const moved = await page.evaluate(() => document.activeElement.dataset.category);
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Enter');
+    const pressed = await pressedFilters(page);
+    shown = (await screenRows(page)).filter((row) => row.shown);
+    check('filters work from the keyboard', () => {
+      assert.equal(moved, 'wins');
+      assert.deepEqual(pressed, ['difficulty', 'state:unlocked']);
+      assert.ok(shown.every((row) => row.category === 'difficulty'));
+    });
+  });
+
+  await scenario('Continue earns at completion', {}, async (page, check) => {
+    await enterMenu(page);
+    await freshBoard(page);
+    const pairs = await cardPairs(page);
+    await turnPair(page, ...pairs[0]);
+    await turnPair(page, ...pairs[1]);
+    await page.click('#btn-game-menu');
+    const saved = await storedJson(page, GAME_STORE);
+    const before = await storedJson(page, PROGRESS_STORE);
+    check('nothing is unlocked mid-game', () => assert.deepEqual(before.achievements.unlocked, {}));
+    await continueAfterReload(page);
+    await finishBoard(page);
+    const progress = await storedJson(page, PROGRESS_STORE);
+    const [announced] = await progressEvents(page, 'deja-vu:achievements-unlocked');
+    const highlighted = await page.evaluate(() => !document.querySelector('#complete-achievements').hidden);
+    check('the continued run earns its achievements once, under its own id', () => {
+      assert.equal(announced.runId, saved.runId);
+      assert.ok(unlockedBy(progress, saved.runId).includes('perfect-1'));
+      assert.equal(highlighted, true);
+    });
+  });
+
+  await scenario('a notice when the results were never shown', { seed: FULL_MOTION }, async (page, check) => {
+    await enterMenu(page);
+    await freshBoard(page);
+    const pairs = await cardPairs(page);
+    for (const pair of pairs.slice(0, -1)) await turnPair(page, ...pair);
+    await turnPair(page, ...pairs.at(-1));
+    // Straight to the menu, before the results dialog opens.
+    await page.click('#btn-game-menu');
+    const [completion] = await progressEvents(page, 'deja-vu:completion');
+    const progress = await storedJson(page, PROGRESS_STORE);
+    const earned = unlockedBy(progress, completion.runId);
+    const notice = await shownNotice(page);
+    const resultsOpened = await page.evaluate(() => document.querySelector('#complete-dialog').open);
+    check('the run\'s unlocks arrive as one notice on the menu instead', () => {
+      assert.equal(resultsOpened, false);
+      assert.ok(notice, 'no notice');
+      assert.equal(notice.count, earned.length);
+      assert.equal(notice.eyebrow, `${earned.length} achievements unlocked`);
+      assert.equal(notice.focusInside, false);
+    });
+    await page.click('.achievement-toast-view');
+    await page.waitForFunction(() => document.querySelector('#screen-achievements').classList.contains('is-active'), null, { timeout: 3000 });
+    await page.waitForTimeout(400);
+    const remaining = await noticeCount(page);
+    check('View opens the Achievements screen', () => assert.equal(remaining, 0));
+
+    // A notice is taken down when a dialog comes up, and shown again later.
+    await page.click('#screen-achievements [data-back-menu]');
+    await announceUnlocks(page, fakeAchievements(1, 'held'));
+    assert.ok(await shownNotice(page), 'no notice');
+    await page.click('#btn-new-game');
+    await page.waitForFunction(() => document.querySelector('#difficulty-dialog').open);
+    const underDialog = await noticeCount(page);
+    await page.click('#difficulty-dialog .dialog-cancel');
+    const again = await shownNotice(page);
+    check('a dialog withdraws a notice, which returns in full afterwards', () => {
+      assert.equal(underDialog, 0);
+      assert.equal(again?.title, 'held achievement 1');
+    });
+    await page.click('.achievement-toast-close');
+
+    // A burst while the board is up: held, merged, bounded.
+    await freshBoard(page);
+    for (let index = 0; index < 8; index += 1) await announceUnlocks(page, fakeAchievements(2, `burst${index}`));
+    const duringPlay = await noticeCount(page);
+    await page.click('#btn-game-menu');
+    const seen = [];
+    for (let index = 0; index < 6; index += 1) {
+      const shownNow = await shownNotice(page, 2500);
+      if (!shownNow) break;
+      seen.push(shownNow.count);
+      await page.click('.achievement-toast-close');
+    }
+    check('notices wait while the board is up, then arrive merged and bounded', () => {
+      assert.equal(duringPlay, 0);
+      assert.ok(seen.length <= 3, `${seen.length} notices`);
+      assert.equal(seen.reduce((sum, value) => sum + value, 0), 16, 'an unlock was lost');
+    });
+  });
+
+  await scenario('repeated restarts and rapid input', {}, async (page, check) => {
+    await enterMenu(page);
+    for (let index = 0; index < 5; index += 1) await pickDifficulty(page, 'easy');
+    await freshBoard(page);
+    const abandoned = await progressEvents(page, 'deja-vu:run-abandoned');
+    let unlocks = await progressEvents(page, 'deja-vu:achievements-unlocked');
+    check('restarting earns and shows nothing', () => {
+      assert.ok(abandoned.length >= 5, `${abandoned.length} abandoned`);
+      assert.deepEqual(unlocks, []);
+    });
+
+    await finishBoard(page);
+    const first = (await progressEvents(page, 'deja-vu:completion')).at(-1);
+    await page.click('#btn-play-again');
+    await page.waitForFunction(() => !document.querySelector('#complete-dialog').open
+      && !document.querySelector('#card-grid').classList.contains('is-previewing'), null, { timeout: 15000 });
+    const cleared = await page.evaluate(() => document.querySelector('#complete-achievements').hidden);
+    // The last pair of the second game with the board mashed as it resolves.
+    const pairs = await cardPairs(page);
+    for (const pair of pairs.slice(0, -1)) await turnPair(page, ...pair);
+    await page.evaluate((last) => {
+      const cards = [...document.querySelectorAll('#card-grid .memory-card')];
+      cards[last[0]].click();
+      cards[last[1]].click();
+      for (let round = 0; round < 20; round += 1) cards.forEach((card) => card.click());
+    }, pairs.at(-1));
+    await page.waitForFunction(() => document.querySelector('#complete-dialog').open, null, { timeout: 5000 });
+    const completions = await progressEvents(page, 'deja-vu:completion');
+    const second = completions.at(-1);
+    unlocks = await progressEvents(page, 'deja-vu:achievements-unlocked');
+    const progress = await storedJson(page, PROGRESS_STORE);
+    const listed = await trackedAchievements(page);
+    const nameOf = (id) => listed.find((item) => item.id === id).name;
+    const highlightNames = await page.textContent('.completion-achievement-names');
+    check('Play Again clears the last highlight; each game shows only its own', () => {
+      assert.equal(cleared, true);
+      assert.equal(completions.length, 2, 'mashing the board completed it twice');
+      assert.deepEqual(unlocks.map((event) => event.runId), [first.runId, second.runId]);
+      for (const id of unlockedBy(progress, second.runId)) assert.ok(highlightNames.includes(nameOf(id)));
+      for (const id of unlockedBy(progress, first.runId)) assert.ok(!highlightNames.includes(nameOf(id)), `${id} carried over`);
+    });
+
+    await page.click('#btn-complete-menu');
+    await openAchievements(page);
+    await page.evaluate(() => {
+      const chips = [...document.querySelectorAll('#screen-achievements .filter-chip')];
+      for (let index = 0; index < 60; index += 1) chips[(index * 7) % chips.length].click();
+    });
+    const pressed = await pressedFilters(page);
+    const rows = await screenRows(page);
+    check('rapid filter changes settle consistently', () => {
+      assert.equal(pressed.length, 2, `${pressed.join(', ')} pressed`);
+      const [category, state] = [pressed[0], pressed[1].slice('state:'.length)];
+      for (const row of rows) {
+        const expected = (category === 'all' || row.category === category) && (state === 'all' || row.state === state);
+        assert.equal(row.shown, expected, `${row.id} shown=${row.shown}`);
+      }
+    });
+  });
+
+  await scenario('reset', { seed: { [PROGRESS_STORE]: seeded, [STATS_STORE]: JSON.stringify({ played: 4, won: 4, perfect: 2, bestScore: 13000, bests: {} }) } }, async (page, check) => {
+    await enterMenu(page);
+    await openAchievements(page);
+    const statsBefore = await page.evaluate((key) => localStorage.getItem(key), STATS_STORE);
+    const before = await storedJson(page, PROGRESS_STORE);
+    await page.click('#btn-reset-achievements');
+    const message = await page.textContent('#reset-achievements-message');
+    await page.click('#btn-keep-achievements');
+    const kept = await storedJson(page, PROGRESS_STORE);
+    check('the confirmation says what is lost and what is kept; Keep changes nothing', () => {
+      assert.match(message, new RegExp(`all ${Object.keys(before.achievements.unlocked).length} unlocked achievements`));
+      assert.deepEqual(kept, before);
+    });
+    await page.click('#btn-reset-achievements');
+    await page.click('#btn-confirm-reset-achievements');
+    await page.waitForFunction(() => document.querySelector('#achievements-unlocked').textContent === '0');
+    const after = await storedJson(page, PROGRESS_STORE);
+    const statsAfter = await page.evaluate((key) => localStorage.getItem(key), STATS_STORE);
+    await page.waitForTimeout(150);
+    const ui = await page.evaluate(() => ({
+      note: document.querySelector('#achievements-note').textContent,
+      live: document.querySelector('#achievement-live').textContent,
+      focus: document.activeElement?.id,
+    }));
+    check('Reset achievements clears unlocks and their progress, and nothing else', () => {
+      assert.deepEqual(after.achievements.unlocked, {});
+      assert.equal(after.totals.wins, 0);
+      assert.ok(Number.isSafeInteger(after.achievements.resetAt));
+      assert.deepEqual(after.recordedRuns, before.recordedRuns, 'the ledger is kept');
+      assert.equal(statsAfter, statsBefore, 'statistics changed');
+      assert.match(ui.note, /Counting since/);
+      assert.match(ui.live, /Achievements reset/);
+      assert.equal(ui.focus, 'btn-reset-achievements');
+    });
+
+    // Statistics reset keeps its own meaning: unlocks stay.
+    await page.click('#screen-achievements [data-back-menu]');
+    await freshBoard(page);
+    await finishBoard(page);
+    await page.click('#btn-complete-menu');
+    await page.click('#btn-statistics');
+    await page.click('#btn-reset-stats');
+    await page.waitForTimeout(150);
+    const statsReset = await storedJson(page, PROGRESS_STORE);
+    check('a statistics reset still keeps unlocked achievements', () => {
+      assert.ok(Object.hasOwn(statsReset.achievements.unlocked, 'wins-1'));
+      assert.equal(statsReset.totals.wins, 0);
+    });
+  });
+
+  {
+    const legacyStats = { played: 6, won: 5, perfect: 2, bestScore: 5900, bests: { easy: { time: 15, mistakes: 0, score: 5900 } } };
+    await scenario('migration notice', { seed: { [STATS_STORE]: JSON.stringify(legacyStats) } }, async (page, check) => {
+      const progress = await storedJson(page, PROGRESS_STORE);
+      const backfilled = unlockedBy(progress, null);
+      await enterMenu(page);
+      const notice = await shownNotice(page);
+      check('an upgrade says once what earlier games unlocked', () => {
+        assert.ok(backfilled.length >= 5, `${backfilled.length} backfilled`);
+        assert.equal(notice?.source, 'history');
+        assert.equal(notice?.count, backfilled.length);
+        assert.equal(notice?.eyebrow, 'From your earlier games');
+      });
+      await page.reload({ waitUntil: 'load' });
+      await enterMenu(page);
+      const again = await shownNotice(page, 1500);
+      check('and not again after a reload', () => assert.equal(again, null));
+      await openAchievements(page);
+      const rows = (await screenRows(page)).filter((row) => row.state === 'unlocked');
+      check('the screen marks them as from earlier games', () => {
+        assert.deepEqual(rows.map((row) => row.id).sort(), backfilled);
+        assert.ok(rows.every((row) => row.detail.startsWith('From earlier games')));
+      });
+    });
+  }
+
+  await scenario('missing achievements module', {}, async (page, check, context) => {
+    await context.route('**/achievements-ui.js', (route) => route.abort());
+    await page.reload({ waitUntil: 'load' });
+    await enterMenu(page);
+    await freshBoard(page);
+    await finishBoard(page);
+    const progress = await storedJson(page, PROGRESS_STORE);
+    await page.click('#btn-complete-menu');
+    await openAchievements(page);
+    const fallback = await page.textContent('#achievement-list');
+    check('the game still plays and records achievements; the screen says why it is empty', () => {
+      assert.ok(Object.keys(progress.achievements.unlocked).length > 0);
+      assert.match(fallback, /could not be shown/);
+    });
+  });
+
+  await scenario('missing card art', {}, async (page, check, context) => {
+    await context.route('**/card-flip-sprite-sheet.png', (route) => route.abort());
+    await page.reload({ waitUntil: 'load' });
+    await enterMenu(page);
+    const requests = [];
+    page.on('request', (request) => requests.push(request.url()));
+    await openAchievements(page);
+    const badges = await page.evaluate(() => document.querySelectorAll('#achievement-list svg.achievement-badge use[href^="#ach-glyph-"]').length);
+    // Music may still be buffering; nothing else may be fetched.
+    const fetched = requests.filter((url) => !/\.(mp3|mp4)(\?|$)/.test(decodeURIComponent(url)));
+    check('badges are inline: the screen draws without any download', () => {
+      assert.equal(badges, 100);
+      assert.deepEqual(fetched, []);
+    });
+  });
+
+  for (const reduced of [true, false]) {
+    await scenario(`notices with ${reduced ? 'reduced motion' : 'animations'}`, reduced ? {} : { seed: FULL_MOTION }, async (page, check) => {
+      await enterMenu(page);
+      await announceUnlocks(page, fakeAchievements(1));
+      const notice = await shownNotice(page);
+      const seconds = Math.max(...notice.transition.split(',').map((value) => parseFloat(value)));
+      check(reduced ? 'arrive without moving' : 'slide in briefly', () => {
+        if (reduced) {
+          assert.ok(seconds < 0.01, `transition ${notice.transition}`);
+          assert.equal(notice.transform, 'none');
+        } else {
+          assert.ok(seconds >= 0.1, `transition ${notice.transition}`);
+        }
+      });
+    });
+  }
+}
+
 // ------------------------------------------------------------------- main ---
 
 async function main() {
@@ -2401,6 +3011,7 @@ async function main() {
     if (SUITE_FILTER.has('loading')) await auditLoading(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('lifecycle')) await auditLifecycle(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('progress')) await auditProgress(runner, browser, server.baseUrl);
+    if (SUITE_FILTER.has('achievements')) await auditAchievements(runner, browser, server.baseUrl);
   } finally {
     await browser.close();
     await server.close();

@@ -991,6 +991,17 @@ document.querySelector('#btn-statistics').addEventListener('click', () => {
   renderStatistics();
   showScreen('statistics');
 });
+document.querySelector('#btn-achievements').addEventListener('click', () => {
+  playFeedback('tap');
+  showScreen('achievements');
+});
+// An unlock notice's "View" button (achievements-ui.js). Notices only show
+// away from the board, so this never interrupts a game.
+window.addEventListener('deja-vu:open-achievements', () => {
+  if (currentScreen === 'game' || currentScreen === 'start' || currentScreen === 'intro') return;
+  playFeedback('tap');
+  showScreen('achievements');
+});
 document.querySelector('#btn-how-to-play').addEventListener('click', () => {
   playFeedback('tap');
   showScreen('help');
@@ -1056,7 +1067,7 @@ document.querySelector('#btn-complete-menu').addEventListener('click', () => {
 });
 
 document.querySelector('#btn-reset-stats').addEventListener('click', () => {
-  if (!window.confirm('Reset all DEJA VU statistics? This cannot be undone.')) return;
+  if (!window.confirm('Reset all DEJA VU statistics? Achievements you have unlocked are kept. This cannot be undone.')) return;
   statistics = { ...DEFAULT_STATS, bests: {} };
   writeStorage(STORAGE.stats, statistics);
   // Progress totals and streaks reset with the statistics they extend.

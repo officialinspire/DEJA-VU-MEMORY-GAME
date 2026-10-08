@@ -85,13 +85,15 @@ export function emptyBests() {
  *   proved it;
  * bests: per difficulty, see BESTS;
  * day: the latest local day with a win, the difficulties won on it, and the
- *   most difficulties ever won on one day.
+ *   most difficulties ever won on one day;
+ * resetAt: when the player last reset achievement progress (ms), or null.
  */
 export function emptyAchievements() {
   return {
     unlocked: {},
     bests: Object.fromEntries(DIFFICULTY_KEYS.map((key) => [key, emptyBests()])),
     day: { key: null, difficulties: [], most: 0 },
+    resetAt: null,
   };
 }
 
@@ -155,6 +157,7 @@ function normalizeAchievements(raw) {
     achievements.day.difficulties = [...new Set(won)];
   }
   achievements.day.most = Math.min(Math.max(count(day.most), achievements.day.difficulties.length), DIFFICULTY_KEYS.length);
+  achievements.resetAt = Number.isSafeInteger(raw.resetAt) && raw.resetAt >= 0 ? raw.resetAt : null;
   return achievements;
 }
 

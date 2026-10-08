@@ -24,7 +24,12 @@ import {
 } from './progress-model.js';
 import { recordAbandonment, resetProgress } from './progress-evaluator.js';
 import { buildAchievementCatalog } from './achievement-catalog.js';
-import { backfillAchievements, describeAchievements, recordCompletionAndAward } from './achievement-evaluator.js';
+import {
+  backfillAchievements,
+  describeAchievements,
+  recordCompletionAndAward,
+  resetAchievementProgress,
+} from './achievement-evaluator.js';
 
 const STATS_KEY = 'inspireDejaVu:v1:statistics';
 const CORRUPT_KEY = `${PROGRESS_KEY}:corrupt`;
@@ -35,6 +40,10 @@ function achievementCatalog() {
   if (!catalog && runtime()) catalog = buildAchievementCatalog(runtime());
   return catalog || [];
 }
+
+// Achievements this page's load credited from earlier history, for the UI to
+// mention once. Never announced as new unlocks.
+const sessionBackfill = new Set();
 
 let memory = null;
 // Set when this tab holds progress the store refused to save (a full quota):
@@ -84,7 +93,9 @@ function legacyStatistics() {
 // every achievement earlier play proves. Runs once: the result is saved.
 function backfill(progress, statistics) {
   if (!runtime()) return progress;
-  return backfillAchievements(progress, statistics, achievementCatalog(), runtime(), Date.now()).progress;
+  const result = backfillAchievements(progress, statistics, achievementCatalog(), runtime(), Date.now());
+  result.unlocked.forEach((id) => sessionBackfill.add(id));
+  return result.progress;
 }
 
 function legacySeed() {
@@ -155,6 +166,15 @@ export function getAchievements() {
   return describeAchievements(load().progress, achievementCatalog(), runtime());
 }
 
+/**
+ * Ids of achievements this page load credited from earlier history (an
+ * upgrade's first load), still unlocked from it.
+ */
+export function getSessionBackfill() {
+  const { unlocked } = load().progress.achievements;
+  return [...sessionBackfill].filter((id) => Object.hasOwn(unlocked, id) && unlocked[id].runId === null);
+}
+
 window.addEventListener('deja-vu:completion', (event) => {
   update((progress) => recordCompletionAndAward(progress, event.detail, achievementCatalog(), runtime(), Date.now()), 'completion');
 });
@@ -165,6 +185,11 @@ window.addEventListener('deja-vu:run-abandoned', (event) => {
 
 window.addEventListener('deja-vu:statistics-reset', (event) => {
   update((progress) => resetProgress(progress, event.detail?.at ?? Date.now()), 'reset');
+});
+
+// Dispatched by the achievements screen once the player confirms.
+window.addEventListener('deja-vu:achievements-reset', (event) => {
+  update((progress) => resetAchievementProgress(progress, event.detail?.at ?? Date.now()), 'achievements reset');
 });
 
 // Settle the record now, before any game: a first run seeds it, and backfills

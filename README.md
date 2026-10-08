@@ -4,8 +4,8 @@
 
 ### Installing for offline play
 
-1. Open the site once with a working connection and let it finish loading. The precache is 34 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
-2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>@/DEJA-VU-MEMORY-GAME/` cache with 34 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
+1. Open the site once with a working connection and let it finish loading. The precache is 36 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
+2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>@/DEJA-VU-MEMORY-GAME/` cache with 36 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
 3. Install the app if you want a standalone window: **Chrome/Edge desktop** — the install icon in the address bar, or ⋮ → Cast, save and share → Install. **Android Chrome** — ⋮ → Add to Home screen. **iOS Safari** — Share → Add to Home Screen (Safari has no install prompt; this is the only route).
 4. You can now go fully offline. Launching from the home screen or the installed window works with no network, as does reloading the tab.
 
@@ -121,7 +121,7 @@ A damaged field is repaired on its own. A record from a newer build is never ove
 
 ## Achievements
 
-Exactly 100, defined in `achievement-catalog.js`. There is no achievements screen yet; `getAchievements()` from `progress-tracker.js` lists them all, and `deja-vu:achievements-unlocked` announces new unlocks with their names.
+Exactly 100, defined in `achievement-catalog.js` and shown on the **Achievements** screen from the main menu (see *On screen* below). `getAchievements()` from `progress-tracker.js` lists them all, and `deja-vu:achievements-unlocked` announces new unlocks with their names.
 
 Each has a permanent `id`, a DEJA VU-themed `name`, a plain `requirement`, a `category` and a `threshold`. The list adds the player's `value` (the current measure, or `null` before anything counts), `progress` (0 to 1, and 1 once unlocked), `unlocked`, `unlockedAt` (ms), the `runId` that earned it, and `backfilled`. An id is never renamed or reused, because unlocks are stored under it.
 
@@ -159,6 +159,26 @@ Each has a permanent `id`, a DEJA VU-themed `name`, a plain `requirement`, a `ca
 
 No per-difficulty win count, pair total, streak or day is invented. A legacy Insane best can unlock *Win an Insane game*, but *Win 5 Insane games* counts tracked wins only.
 
+### On screen
+
+`achievements-ui.js` and `achievements-ui.css` present the achievements; they only read what the tracker reports. They load as their own module, so if they ever fail to load the game still plays and still records achievements, and the screen says it could not be shown.
+
+- **The Achievements screen** (main menu → Achievements) is a panel like Statistics, with the menu music.
+  - It shows *N of 100 unlocked* with a progress ring.
+  - **Category filters** cover all nine categories, plus All / Unlocked / Locked. They are toggle buttons with their pressed state exposed; arrow keys move along a row, and each change is announced ("Showing 6 unlocked Speed achievements").
+  - **Every achievement** shows its badge, name and plain requirement. An unlocked one shows its unlock date; one proven from earlier games says so ("From earlier games · recorded …"). A locked one shows its progress as text ("4 of 10 won", "Best 59 s · goal 37 s") and a bar.
+  - **Badges** are inline SVG from one sprite, with a glyph and colour per category and a lock while locked. Nothing is downloaded, so the screen works with the card art missing and offline.
+- **The results** of a game that unlocked something carry a highlight line: the badges and names, one line on short desktop windows. It is part of the dialog's description for screen readers and never moves focus from *Play Again*.
+- **Unlock notices** are small toasts.
+  - They never take focus, and never cover the board or a result. They wait while a game, the start or intro screen, any dialog, or a hidden page is showing. A notice on screen when one of those appears is taken down and shown again later in full.
+  - Unlocks already highlighted in the results are not repeated as a notice. Notices appear for runs whose results were never shown (leaving a finished board before its results open), and once, after an upgrade, for achievements proven from earlier games.
+  - Simultaneous unlocks are one notice. At most three wait, and later unlocks merge into the last one, so a burst neither piles up nor loses anything.
+  - Each notice is announced through a polite live region, stays 5 s (held while hovered or focused), and can be dismissed or opened with *View*.
+  - A notice sits at the top or bottom edge, whichever covers fewer of the screen's controls, inside the safe-area insets. With reduced motion it appears without sliding.
+- **Reset achievements…** at the end of the screen opens a dialog titled *Reset achievements?*. It says how many unlocks will be locked again, that all progress toward them is cleared, and that statistics and personal bests are not changed. It opens on *Keep achievements*, and Escape cancels.
+  - Confirming locks every achievement and clears the totals, streaks, bests and days they are measured on. The run ledger is kept, so an old completion cannot count again, and nothing is backfilled again.
+  - **Reset statistics** keeps its own meaning: it clears statistics and progress totals but never takes back an unlocked achievement. Its confirmation now says so.
+
 ## Asset loading
 
 The card sprite sheet is the one download play cannot start without, so it goes first and everything else waits on it:
@@ -178,7 +198,7 @@ It covers:
 
 - **No horizontal overflow** on any screen or dialog, checked on the document, `body`, `#app`, and the active view.
 - **Essential text and controls reachable.** Each view declares the elements a player must be able to read or press; every one must be rendered, inside the available width without horizontal scrolling, reachable by vertical scrolling, and not covered by anything else. Buttons and inputs additionally have to be hit-testable and inside the viewport once scrolled to.
-- **Views that must fit outright.** The start and intro screens have no scroll container, and on desktop the board and all three modals must fit the window without scrolling; only the long-form panels (statistics, help, settings) may scroll.
+- **Views that must fit outright.** The start and intro screens have no scroll container. On desktop the menu, the board and every modal must fit the window without scrolling, including the results with an achievements highlight and the *Reset achievements?* confirmation. Only the long-form panels (statistics, help, settings, achievements) may scroll.
 - **Intro aspect ratio.** The `<video>` box must not exceed its screen, and the painted frame's ratio must match the encoded one — no stretching, no cover-crop.
 - **Desktop viewports** 1280x720, 1366x768, 1440x900 and 1920x1080, each at 100%, 125% and 150% browser zoom (zoom modelled as a smaller CSS viewport at a higher device pixel ratio).
 - **Mobile layout stability.** Board, menu, dialog and intro geometry on seven phone and tablet viewports is compared against `scripts/mobile-layout-baseline.json`, and the desktop-only media queries must never match on a touch device. Intentional mobile changes are recorded with `npm run test:browser -- --update-baseline`.
@@ -208,8 +228,19 @@ It covers:
   - A perfect Insane board with animations on reaches the fastest Insane speed goal and the top score goals.
   - Reloading during a mismatch's study time keeps the mistake, so that win earns no perfect achievement.
   - Old statistics backfill exactly the achievements they prove, without per-difficulty counts.
+- **Achievements UI** (`--suite=achievements`):
+  - **Phones and tablets** (all seven mobile viewports): the menu, the Achievements screen, the reset confirmation and results with unlocks are fully reachable. The confirmation opens on *Keep achievements*, and Escape cancels it. A notice over the menu covers no menu button, takes no focus, is announced, stays inside simulated safe-area insets, and is not shown with the results.
+  - **Awards in play:** a real Easy win highlights exactly its unlocks without moving focus, and does not repeat them as a notice. The screen then shows them with the run's date, plays the menu music, and filters by state and category, also from the keyboard.
+  - **Continue** after a reload earns at completion under the original run id.
+  - **A finished board left before its results** gets one notice instead; *View* opens the screen. A dialog withdraws a notice, which returns in full. A burst of 16 unlocks while the board is up arrives as at most three notices with none lost.
+  - **Repeated restarts and rapid input:** five rapid restarts earn and show nothing. *Play Again* clears the previous highlight, and each game highlights only its own. Mashing the board as the last pair resolves completes it once. Sixty rapid filter clicks settle consistently.
+  - **Reset:** *Keep* changes nothing. Confirming clears unlocks and their progress, keeps the ledger and leaves statistics byte-identical, then announces the reset and returns focus. A later statistics reset still keeps unlocks.
+  - **Migration:** old statistics produce one *From your earlier games* notice, not repeated after a reload, and the screen marks those rows.
+  - **Missing assets:** with `achievements-ui.js` blocked, a game still completes and records achievements. With the card art blocked, all 100 badges draw with no download.
+  - **Motion:** notices slide with animations on and appear without motion under reduced motion.
+  - **Offline**, in the offline suite: a win unlocks achievements, highlighted in its results, and the Achievements screen renders from the cache.
 
-Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,loading,lifecycle,progress`.
+Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,loading,lifecycle,progress,achievements`.
 
 `npm run test:progress` covers the record, the evaluator and storage handling directly in Node:
 - field-by-field repair, records from newer builds, the bounded ledger, calendar days (leap days, year ends, both daylight-saving changes, other time zones) and the legacy seed;
@@ -225,6 +256,7 @@ Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,
 - **No reward for spam or worse play.**
 - **Backfill:** legacy-statistics proofs, version-1 migration, and idempotence.
 - **Tracker storage:** unlock events, reload, reset, migration, newer records and a full quota.
+- **Resetting achievements:** unlocks, bests and the totals they stand on start over; the ledger stays; statistics are untouched; the next new win earns again.
 
 ### Checking loading by hand
 
@@ -255,6 +287,51 @@ Other behavior worth knowing:
 - **The precache revalidates rather than re-downloads.** Entries are fetched with `cache: 'no-cache'`: a new generation never stores a stale copy, and on a host that sends `ETag`/`Last-Modified` validators, as GitHub Pages does, a file the page has just downloaded (the sprite sheet on a first visit) comes back as a 304 instead of a second download.
 - **Failures are visible in development.** A failed registration logs to the page console, and the worker reports precache problems both to its own console and as a message to any open page.
 
+## Device checks (manual)
+
+The automated suites run in desktop Chromium, with phones emulated by viewport, pixel ratio and touch. They cannot show how a real phone's browser installs the app, evicts storage, routes audio, draws safe areas or speaks to a screen reader. The checks below need real devices. They are kept apart from the automated results on purpose: a passing `npm test` says nothing about them.
+
+**Status for v1.8.0: not yet run on hardware.** Record each run in the table at the end.
+
+**Android (Chrome, installed from *Add to Home screen* / *Install app*)**
+1. Open the site online once, wait about 10 s for the worker to activate, then install. Launch from the icon.
+2. Turn on airplane mode, force-stop the app, and launch it from the icon. The start screen appears with its art. A tap plays the intro (or skips it) and the menu music starts.
+3. Offline, win an Easy game. The results show the achievements it unlocked. Open Achievements: they are listed with today's date.
+4. **Audio.**
+   - Music starts on the first tap.
+   - Switching apps or locking the screen silences it. Coming back opens Pause, and music resumes after *Resume*.
+   - Volume sliders and the music and effects toggles survive a relaunch.
+   - Sound effects follow the media volume.
+5. Haptics: a mismatch vibrates where the device supports it, and *Haptics* off stops it.
+6. Notices:
+   - Finish a board and tap ☰ before the results open. One notice appears on the menu, clear of the status bar and the gesture area.
+   - A notice never appears over a board.
+7. TalkBack: an unlock notice is read out; an achievement row reads name, requirement, state and progress; filter buttons announce *pressed*.
+8. Rotate to landscape on the menu and the Achievements screen: everything can be reached by scrolling.
+
+**iOS / iPadOS (Safari, *Share → Add to Home Screen*)**
+1. Add to the Home Screen while online, open it once from the icon, and wait about 10 s.
+2. Turn on airplane mode, remove the app from the app switcher, and launch it from the icon. It loads offline and plays an Easy game to its results.
+3. **Audio.**
+   - The first tap starts the menu music.
+   - It stops when the screen locks or the app is backgrounded, and resumes after *Resume*.
+   - Check sound effects with the ringer switch in both positions (Web Audio follows the ringer on some iOS versions; note what happens).
+   - Plug in and unplug headphones mid-game: no error, and music continues or pauses cleanly.
+4. **Safe areas** on a notched or Dynamic Island device, in portrait and landscape:
+   - Notices sit below the status area.
+   - The home indicator does not cover *Reset achievements…*, *Play Again* or the board.
+5. **Reduced Motion** (Settings → Accessibility → Motion) and the in-app *Reduced motion* toggle: notices appear without sliding.
+6. **VoiceOver:**
+   - Unlock notices are spoken without moving focus.
+   - The results dialog reads its achievements line.
+   - Filter buttons announce *selected*.
+   - *Reset achievements?* opens on *Keep achievements*.
+7. **Storage:** after the app has been unused for more than a week, Safari may evict its storage, including progress and achievements. Note whether they survive on the Home Screen app and in a plain Safari tab.
+
+| Date | Device | OS / browser | Build | Result and notes |
+|---|---|---|---|---|
+| — | — | — | v1.8.0 | not yet run |
+
 ## Features
 
 - Four board sizes: Easy, Intermediate, Advanced, and Insane
@@ -264,7 +341,7 @@ Other behavior worth knowing:
 - Working-memory board ratings: EXCELLENT 85–100%, GOOD 70–84%, AVERAGE 50–69%, and POOR 0–49%
 - Local autosave with Continue Game
 - Persistent statistics and personal bests
-- 100 achievements tracked from gameplay (no achievements screen yet)
+- 100 achievements with an Achievements screen, category filters, unlock notices and results highlights
 - Scene-aware menu/gameplay music with smooth crossfades and persistent volume controls
 - Restrained synthesized selection, match, mistake, menu, start, and completion feedback
 - Independent, persistent SFX and best-effort haptic controls; vibration availability depends on the mobile browser
@@ -287,7 +364,8 @@ Other behavior worth knowing:
 - `feedback-manager.js` — synthesized UI cues and guarded mobile vibration feedback
 - `gameplay-clock.js` — pausable gameplay time: turn and preview timers that freeze with the game, and the score clock
 - `progress-model.js` / `progress-evaluator.js` / `progress-tracker.js` — the versioned progress record, the pure rules that update it, and the event listener that stores it
-- `achievement-catalog.js` / `achievement-evaluator.js` — the 100 achievements with thresholds derived from the boards and scoring, and the pure rules that award, backfill and describe them
+- `achievement-catalog.js` / `achievement-evaluator.js` — the 100 achievements with thresholds derived from the boards and scoring, and the pure rules that award, backfill, reset and describe them
+- `achievements-ui.js` / `achievements-ui.css` — the Achievements screen, inline-SVG badges, unlock notices, the results highlight and the reset confirmation
 - `sprite-atlas.js` — measured card rectangles in the sprite sheet, and each card side's canvas, painted at the card's real pixel size from a bounded cache of sized crops
 - `sw.js` / `manifest.webmanifest` — offline and installable web app support
 - `scripts/build-dist.mjs` — deterministic `dist/` build and parity validation

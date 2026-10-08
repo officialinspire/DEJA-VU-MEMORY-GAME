@@ -1026,10 +1026,17 @@ html.reduced-motion *::after {
 
 /* Short desktop windows: the menu footer (logo and site link) sat below the
    fold at 150% browser zoom on 720p/768p displays. Tighten the same spacing
-   the short-height mobile query tightens, without touching touch layouts. */
+   the short-height mobile query tightens, and set the six menu buttons in two
+   columns of three, which the width of these windows has room for, without
+   touching touch layouts. */
 @media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 640px) {
   .menu-screen {
     padding-top: calc(1.25rem + var(--safe-top));
+  }
+
+  .menu-nav {
+    width: min(100%, 31rem);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .menu-content .brand {
