@@ -969,9 +969,15 @@ async function auditSprites(runner, browser, baseUrl) {
     await page.evaluate(() => {
       window.__dprEvents = [];
       window.__dprQuery = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
-      window.__dprQuery.addEventListener('change', event => window.__dprEvents.push({ matches: event.matches, ratio: devicePixelRatio }));
+      window.__dprQuery.addEventListener('change', event => window.__dprEvents.push({ matches: event.matches, ratio: devicePixelRatio, trusted: event.isTrusted }));
     });
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 2, mobile: false });
+    // Metrics emulation updates DPR without notifying media-query listeners in
+    // current Chromium. Native media emulation flushes that display-change
+    // notification; no event or app callback is fabricated by the test.
+    await cdp.send('Emulation.setEmulatedMedia', { media: 'screen' });
+    await page.waitForFunction(() => window.__dprEvents.some(event => event.trusted && event.ratio === 2), null, { timeout: 5000 });
+    console.log('Native DPR change', await page.evaluate(() => window.__dprEvents));
     await spritesSettled(page);
     // CDP updates devicePixelRatio before the resolution-change repaint is delivered.
     // Wait for the actual bitmap dimensions, then keep the full pixel assertions.
@@ -993,6 +999,7 @@ async function auditSprites(runner, browser, baseUrl) {
       throw error;
     });
     assertBoardSprites(runner, `${label} to 2x pixel ratio`, await page.evaluate(() => window.__sprites.inspectBoard()), 30);
+    await cdp.send('Emulation.setEmulatedMedia', { media: '' });
     for (const difficulty of DIFFICULTIES) {
       for (const viewport of [{ width: 1280, height: 720 }, { width: 1600, height: 900 }]) {
         await page.setViewportSize(viewport);
