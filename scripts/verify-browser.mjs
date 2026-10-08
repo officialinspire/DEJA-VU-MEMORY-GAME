@@ -3031,7 +3031,7 @@ async function main() {
 
   const runner = createRunner();
   const server = await startServer();
-  const browser = await chromium.launch({ executablePath });
+  const browser = await chromium.launch({ executablePath, headless: process.env.DEJA_VU_HEADED !== '1' });
   try {
     if (SUITE_FILTER.has('desktop')) await auditDesktop(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('intro')) await auditIntroAspectRatio(runner, browser, server.baseUrl);

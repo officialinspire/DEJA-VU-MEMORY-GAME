@@ -19,7 +19,7 @@
 // Pages project sites live on <user>.github.io), so the cache name carries
 // this worker's scope, activate only ever clears this app's own older
 // generations, and requests outside the scope are left to the network.
-const CACHE_VERSION = 'v1.8.3';
+const CACHE_VERSION = 'v1.8.2';
 const SCOPE_PATH = new URL('./', self.location).pathname;
 const CACHE_PREFIX = 'deja-vu-';
 const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}@${SCOPE_PATH}`;
