@@ -75,45 +75,7 @@
   window.DEJA_VU_BALANCE = runtime; // compatibility alias for preview/results modules
   window.DEJA_VU_PREVIEW_ACTIVE = false;
 
-  const nativeSetTimeout = window.setTimeout.bind(window);
-  const gameplayDelays = new Set([460, 470, 450, 10, 120]);
-
-  function gameplayIsSuspended() {
-    return document.hidden || Boolean(document.querySelector('#pause-dialog')?.open);
-  }
-
-  function runWhenGameplayActive(callback, args) {
-    if (gameplayIsSuspended()) {
-      nativeSetTimeout(() => runWhenGameplayActive(callback, args), 100);
-      return;
-    }
-    callback(...args);
-  }
-
-  window.setTimeout = function configuredSetTimeout(callback, delay, ...args) {
-    let configuredDelay = Number(delay);
-    const gameScreenActive = document.querySelector('#screen-game')?.classList.contains('is-active');
-    if (configuredDelay === 920 && typeof callback === 'function' && gameScreenActive) {
-      configuredDelay = difficulties[difficultyKeyFromBoard()].mismatchStudyMs;
-    }
-
-    const isGameplayResolution = typeof callback === 'function' && gameScreenActive &&
-      (gameplayDelays.has(Number(delay)) || Number(delay) === 920);
-    if (isGameplayResolution) {
-      return nativeSetTimeout(() => runWhenGameplayActive(callback, args), configuredDelay);
-    }
-    return nativeSetTimeout(callback, configuredDelay, ...args);
-  };
-
-  // The core clock is the only one-second interval registered during startup.
-  // Gate it during memorization so mandatory study time is never scored.
-  const nativeSetInterval = window.setInterval.bind(window);
-  window.setInterval = function configuredSetInterval(callback, delay, ...args) {
-    if (Number(delay) !== 1000 || typeof callback !== 'function') return nativeSetInterval(callback, delay, ...args);
-    return nativeSetInterval(() => {
-      if (window.DEJA_VU_PREVIEW_ACTIVE) return;
-      callback(...args);
-    }, delay);
-  };
-
+  // Timing used to live here as global setTimeout/setInterval overrides keyed
+  // on magic delays. Gameplay now schedules explicitly on gameplay-clock.js,
+  // which pauses with the game and keeps the memorize preview off the score.
 })();

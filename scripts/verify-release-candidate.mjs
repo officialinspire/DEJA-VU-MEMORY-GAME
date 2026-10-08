@@ -12,16 +12,16 @@ const readRoot = (relativePath) => readFile(path.join(rootDirectory, relativePat
 
 async function verifyRuntime() {
   const source = await readRoot('runtime-config.js');
-  let intervalCallback = null;
   const document = {
     hidden: false,
     querySelector() { return null; },
   };
-  const window = {
-    setTimeout() { return 1; },
-    setInterval(callback) { intervalCallback = callback; return 1; },
-  };
+  const nativeSetTimeout = () => 1;
+  const nativeSetInterval = () => 1;
+  const window = { setTimeout: nativeSetTimeout, setInterval: nativeSetInterval };
   vm.runInNewContext(source, { document, window, Number, Object, Math }, { filename: 'runtime-config.js' });
+  assert.equal(window.setTimeout, nativeSetTimeout, 'runtime config leaves setTimeout alone');
+  assert.equal(window.setInterval, nativeSetInterval, 'runtime config leaves setInterval alone');
 
   const runtime = window.DEJA_VU_RUNTIME;
   assert.ok(runtime, 'runtime configuration installs');
@@ -44,14 +44,97 @@ async function verifyRuntime() {
     );
   });
 
-  let ticks = 0;
-  window.setInterval(() => { ticks += 1; }, 1000);
-  window.DEJA_VU_PREVIEW_ACTIVE = true;
-  intervalCallback();
-  assert.equal(ticks, 0, 'preview excludes the gameplay clock');
-  window.DEJA_VU_PREVIEW_ACTIVE = false;
-  intervalCallback();
-  assert.equal(ticks, 1, 'gameplay clock resumes after preview');
+  for (const [key, studyMs] of [['easy', 1050], ['intermediate', 950], ['advanced', 850], ['insane', 750]]) {
+    assert.equal(runtime.difficulties[key].mismatchStudyMs, studyMs, `${key} mismatch study time`);
+  }
+}
+
+async function verifyGameplayClock() {
+  let now = 0;
+  let nextId = 1;
+  const timers = new Map();
+  const platform = {
+    now: () => now,
+    setTimer(callback, delay) {
+      const id = nextId++;
+      timers.set(id, { callback, due: now + delay });
+      return id;
+    },
+    clearTimer(id) { timers.delete(id); },
+  };
+  // Runs every timer due by `time` in order; `late` makes each fire that many
+  // ms after its due time, as real timers do.
+  const runUntil = (time, late = 0) => {
+    for (;;) {
+      const next = [...timers.entries()].sort((a, b) => a[1].due - b[1].due)[0];
+      if (!next || next[1].due + late > time) break;
+      timers.delete(next[0]);
+      now = next[1].due + late;
+      next[1].callback();
+    }
+    now = time;
+  };
+  const source = (await readRoot('gameplay-clock.js')).replace(/^export /gm, '');
+  const sandbox = { Math, Number, Set, performance: { now: () => now }, window: {} };
+  vm.runInNewContext(`${source}\nthis.createGameplayClock = createGameplayClock;`, sandbox, { filename: 'gameplay-clock.js' });
+  const clock = sandbox.createGameplayClock(platform);
+
+  const fired = [];
+  clock.schedule(() => fired.push('match'), 460);
+  runUntil(459);
+  assert.deepEqual(fired, [], 'a gameplay timer does not fire early');
+  runUntil(460);
+  assert.deepEqual(fired, ['match'], 'a gameplay timer fires on time');
+
+  clock.schedule(() => fired.push('study'), 920);
+  runUntil(760);
+  clock.suspend('pause');
+  assert.equal(timers.size, 0, 'a suspended clock holds no native timers');
+  runUntil(10760);
+  clock.suspend('hidden');
+  clock.resume('pause');
+  assert.equal(timers.size, 0, 'it stays frozen while any suspension remains');
+  runUntil(12000);
+  clock.resume('hidden');
+  runUntil(12619);
+  assert.deepEqual(fired, ['match'], 'resuming keeps the remaining time, not the wall time');
+  runUntil(12620);
+  assert.deepEqual(fired, ['match', 'study'], 'and fires once the remaining time has passed');
+
+  const cancel = clock.schedule(() => fired.push('stale'), 100);
+  clock.schedule(() => fired.push('stale'), 200);
+  cancel();
+  clock.cancelAll();
+  runUntil(20000);
+  assert.deepEqual(fired, ['match', 'study'], 'cancelled gameplay timers never fire');
+  assert.equal(timers.size, 0, 'and leave no native timers behind');
+
+  const seconds = [];
+  clock.onSecond((second) => {
+    assert.ok(clock.elapsedMs() >= second * 1000, `second ${second} is reported only once it has passed`);
+    seconds.push(second);
+  });
+  now = 30000;
+  clock.setCounting(true);
+  runUntil(32500, 37);
+  assert.equal(clock.elapsedMs(), 2500, 'the score clock counts play time');
+  clock.exclude('preview');
+  runUntil(36500, 37);
+  assert.equal(clock.elapsedMs(), 2500, 'an excluded span (the memorize preview) is not scored');
+  assert.equal(timers.size, 0, 'a stopped score clock holds no native timers');
+  clock.include('preview');
+  runUntil(37000, 37);
+  clock.suspend('hidden');
+  runUntil(47000, 37);
+  assert.equal(clock.elapsedMs(), 3000, 'a hidden page is not scored');
+  clock.resume('hidden');
+  runUntil(54000, 37);
+  assert.equal(clock.elapsedMs(), 10000, 'late timers cause no drift: time comes from timestamps');
+  assert.deepEqual(seconds, [1, 2, 3, 4, 5, 6, 7, 8, 9], 'each whole second is reported exactly once');
+  clock.setCounting(false);
+  assert.equal(timers.size, 0, 'nothing is left running once play stops');
+  clock.resetElapsed(42500);
+  assert.equal(clock.elapsedMs(), 42500, 'a resumed game restores its time');
 }
 
 async function verifyMusicManager() {
@@ -68,8 +151,12 @@ async function verifyMusicManager() {
       this.volume = 0;
       this.playCalls = 0;
       this.pauseCalls = 0;
+      this.loadCalls = 0;
+      this.readyState = 0;
+      this.preload = 'auto';
       audioInstances.push(this);
     }
+    load() { this.loadCalls += 1; }
     play() { this.paused = false; this.playCalls += 1; return Promise.resolve(); }
     pause() { this.paused = true; this.pauseCalls += 1; }
   }
@@ -92,7 +179,7 @@ async function verifyMusicManager() {
     .replace(/new URL\((['"][^'"]+['"]), import\.meta\.url\)\.href/g, '$1')
     .replace(/export function /g, 'function ')
     .replace(/export \{ MUSIC_SCENES \};?/, '')
-    .concat('\nwindow.__AUDIO_TEST__ = { MUSIC_SCENES, configureMusic, transitionMusic, unlockMusic, getMusicState };');
+    .concat('\nwindow.__AUDIO_TEST__ = { MUSIC_SCENES, configureMusic, transitionMusic, unlockMusic, warmMusic, getMusicState };');
   vm.runInNewContext(source, sandbox, { filename: 'audio-manager.js' });
   const api = window.__AUDIO_TEST__;
   const advance = (time) => {
@@ -105,6 +192,12 @@ async function verifyMusicManager() {
 
   assert.equal(audioInstances.length, 2, 'exactly two reusable music loops are created');
   assert.equal(audioInstances.reduce((total, audio) => total + audio.playCalls, 0), 0, 'music is silent before interaction');
+  assert.deepEqual(audioInstances.map((audio) => audio.preload), ['none', 'none'], 'music downloads nothing before the card art');
+  api.warmMusic();
+  assert.deepEqual(audioInstances.map((audio) => audio.preload), ['auto', 'auto'], 'warming switches both loops to buffering');
+  assert.deepEqual(audioInstances.map((audio) => audio.loadCalls), [1, 1], 'warming starts each idle loop loading once');
+  api.warmMusic();
+  assert.deepEqual(audioInstances.map((audio) => audio.loadCalls), [1, 1], 'warming twice does not restart a load');
   assert.equal(await api.unlockMusic(), true, 'initial gesture unlocks mobile audio');
   assert.deepEqual(audioInstances.map((audio) => audio.playCalls), [1, 1], 'unlock attempts each loop once');
 
@@ -149,6 +242,131 @@ async function verifyMusicManager() {
   api.configureMusic({ musicEnabled: false, volume: 0.22 });
   api.transitionMusic(api.MUSIC_SCENES.gameplay, { duration: 0 });
   assert.ok(audioInstances.every((audio) => audio.paused), 'music toggle silences both loops');
+}
+
+// Failure handling, on a fresh instance: a play() refused for want of a
+// gesture waits for a real one, element errors are retried with a bound, and
+// nothing plays while the page is hidden.
+async function verifyMusicRecovery() {
+  const instances = [];
+  class FakeAudio {
+    constructor(source) {
+      this.src = source;
+      this.paused = true;
+      this.volume = 0;
+      this.readyState = 0;
+      this.error = null;
+      this.playCalls = 0;
+      this.loadCalls = 0;
+      this.outcomes = [];
+      this.listeners = {};
+      instances.push(this);
+    }
+    addEventListener(type, listener) { (this.listeners[type] ||= []).push(listener); }
+    load() { this.loadCalls += 1; this.error = null; }
+    play() {
+      this.playCalls += 1;
+      const outcome = this.outcomes.shift() || 'ok';
+      if (outcome === 'ok') { this.paused = false; return Promise.resolve(); }
+      const error = new Error(outcome);
+      error.name = outcome;
+      return Promise.reject(error);
+    }
+    pause() { this.paused = true; }
+    fail() {
+      this.paused = true;
+      this.error = { code: 2 };
+      (this.listeners.error || []).forEach((listener) => listener());
+    }
+  }
+  const listeners = (target) => {
+    const map = new Map();
+    target.addEventListener = (type, listener) => map.set(type, [...(map.get(type) || []), listener]);
+    target.removeEventListener = (type, listener) => map.set(type, (map.get(type) || []).filter((item) => item !== listener));
+    return map;
+  };
+  const document = { hidden: false };
+  const documentListeners = listeners(document);
+  const window = {};
+  const windowListeners = listeners(window);
+  let now = 0;
+  let nextId = 1;
+  const timers = new Map();
+  const sandbox = {
+    Audio: FakeAudio,
+    document,
+    window,
+    URL,
+    setTimeout(callback, delay) { const id = nextId++; timers.set(id, { callback, due: now + delay }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    requestAnimationFrame() { return 0; },
+    cancelAnimationFrame() {},
+    performance: { now: () => now },
+  };
+  const source = (await readRoot('audio-manager.js'))
+    .replace(/new URL\((['"][^'"]+['"]), import\.meta\.url\)\.href/g, '$1')
+    .replace(/export function /g, 'function ')
+    .replace(/export \{ MUSIC_SCENES \};?/, '')
+    .concat('\nwindow.__AUDIO_TEST__ = { MUSIC_SCENES, configureMusic, transitionMusic, unlockMusic, getMusicState };');
+  vm.runInNewContext(source, sandbox, { filename: 'audio-manager.js' });
+  const api = window.__AUDIO_TEST__;
+  const [menu, gameplay] = instances;
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const gesture = (isTrusted) => (documentListeners.get('pointerup') || []).forEach((listener) => listener({ isTrusted }));
+  const runTimers = async () => {
+    for (;;) {
+      await settle();
+      const next = [...timers.entries()].sort((a, b) => a[1].due - b[1].due)[0];
+      if (!next) return;
+      timers.delete(next[0]);
+      now = next[1].due;
+      next[1].callback();
+    }
+  };
+
+  // Autoplay refused: each element waits for a real gesture of its own.
+  menu.outcomes = ['NotAllowedError', 'NotAllowedError'];
+  gameplay.outcomes = ['NotAllowedError'];
+  assert.equal(await api.unlockMusic(), false, 'a refused unlock reports that music is still locked');
+  api.configureMusic({ musicEnabled: true, volume: 0.22 });
+  api.transitionMusic(api.MUSIC_SCENES.menu, { duration: 0 });
+  await settle();
+  let state = api.getMusicState();
+  assert.ok(state.tracks.menu.needsGesture && state.tracks.gameplay.needsGesture, 'each refused track waits for a gesture');
+  assert.ok((documentListeners.get('pointerup') || []).length > 0, 'a gesture retry is armed');
+  const playsBefore = menu.playCalls + gameplay.playCalls;
+  gesture(false);
+  assert.equal(menu.playCalls + gameplay.playCalls, playsBefore, 'a synthetic event cannot stand in for a gesture');
+  gesture(true);
+  await settle();
+  state = api.getMusicState();
+  assert.equal(menu.paused, false, 'the next real gesture starts the scene\'s track');
+  assert.equal(gameplay.paused, true, 'and unlocks the other without playing it');
+  assert.ok(state.unlocked && state.tracks.menu.unlocked && state.tracks.gameplay.unlocked, 'both elements are unlocked');
+  assert.equal((documentListeners.get('pointerup') || []).length, 0, 'the gesture retry disarms once nothing is waiting');
+
+  // A transient element error is retried with backoff, a bounded number of times.
+  menu.outcomes = ['NetworkError', 'NetworkError', 'NetworkError'];
+  const playsBeforeError = menu.playCalls;
+  menu.fail();
+  await runTimers();
+  assert.equal(menu.playCalls - playsBeforeError, 3, 'an element error is retried exactly three times');
+  assert.ok(menu.loadCalls >= 1, 'a failed resource is fetched again before retrying');
+  assert.equal(timers.size, 0, 'and then it stops: nothing keeps retrying in the background');
+  assert.equal(now, 1000 + 2000 + 4000, 'with backoff between attempts');
+  (windowListeners.get('online') || []).forEach((listener) => listener());
+  await settle();
+  assert.equal(menu.paused, false, 'coming back online gives it another try, which plays');
+
+  // Hidden: retries never make a sound.
+  menu.outcomes = [];
+  document.hidden = true;
+  (documentListeners.get('visibilitychange') || []).forEach((listener) => listener());
+  const playsWhileHidden = menu.playCalls;
+  menu.fail();
+  await runTimers();
+  assert.equal(menu.playCalls, playsWhileHidden, 'no retry plays while the page is hidden');
+  assert.equal(menu.paused, true, 'the hidden page stays silent');
 }
 
 async function verifyFeedbackManager() {
@@ -237,8 +455,14 @@ async function verifyAppShell() {
   const shellEntries = [...shellBody.matchAll(/'([^']+)'/g)].map((match) => match[1]);
   const shellSet = new Set(shellEntries);
   assert.equal(shellEntries.length, shellSet.size, 'service-worker app shell has no duplicate entries');
-  assert.match(swSource, /const CACHE_VERSION = 'v1\.3\.0';/, 'cache version is bumped for this release');
-  assert.match(swSource, /const CACHE_NAME = `deja-vu-\$\{CACHE_VERSION\}`;/, 'cache name is derived from CACHE_VERSION');
+  assert.match(swSource, /const CACHE_VERSION = 'v1\.8\.0';/, 'cache version is bumped for this release');
+  assert.match(swSource, /const CACHE_NAME = `\$\{CACHE_PREFIX\}\$\{CACHE_VERSION\}@\$\{SCOPE_PATH\}`;/,
+    'cache name is derived from CACHE_VERSION and the worker scope');
+  assert.match(swSource, /if \(!url\.pathname\.startsWith\(SCOPE_PATH\)\) return;\n/, 'requests outside the scope are left alone');
+  assert.match(swSource, /key\.endsWith\(`@\$\{SCOPE_PATH\}`\)/, 'activate clears only this scope\'s generations');
+  assert.match(swSource, /event\.waitUntil\(warmMediaCache\(request\)\)/, 'media warming is kept alive by waitUntil');
+  assert.match(swSource, /if \(!warming\.has\(key\)\)/, 'media warming is deduplicated per file');
+  assert.match(swSource, /status: 416/, 'unsatisfiable ranges still answer 416');
   assert.ok(!/cache\.addAll\(/.test(swSource), 'precache is per-asset so one failure cannot abort install');
   assert.match(swSource, /status: 206/, 'cached media answers byte-range requests offline');
   assert.ok(!/skipWaiting\(\)/.test(swSource), 'no skipWaiting, so a session never mixes cache generations');
@@ -250,10 +474,18 @@ async function verifyAppShell() {
   for (const entry of optionalEntries) {
     assert.ok(/\.(?:png|mp3|mp4)$/.test(entry), `${entry} is media or artwork, not required app code`);
   }
+  // Required means the install fails without it: the app code, and the card
+  // sprite sheet, without which no board can be drawn offline.
+  const cardArt = './card-flip-sprite-sheet.png';
+  assert.ok(!optionalEntries.includes(cardArt), 'the card sprite sheet is required, so offline readiness includes the cards');
   for (const entry of shellSet) {
-    if (optionalEntries.includes(entry)) continue;
+    if (optionalEntries.includes(entry) || entry === cardArt) continue;
     assert.ok(/(?:^\.\/$|\.(?:html|css|js|webmanifest)$)/.test(entry), `${entry} is required app code`);
   }
+  assert.match(swSource, /await store\(APP_SHELL\.filter\(\(path\) => !OPTIONAL_ASSETS\.has\(path\)\)\)/,
+    'required entries are precached before optional media');
+  assert.match(swSource, /fetch\(toAbsolute\(path\), \{ cache: 'no-cache' \}\)/,
+    'precache revalidates instead of trusting or re-downloading the HTTP cache');
 
   const requiredSongs = [
     './Deja Vu - Main Menu (Vibe 1).mp3',
@@ -304,11 +536,15 @@ async function verifyAppShell() {
 }
 
 await verifyRuntime();
+await verifyGameplayClock();
 await verifyMusicManager();
+await verifyMusicRecovery();
 await verifyFeedbackManager();
 await verifyAppShell();
 
-console.log('Runtime scoring: PASS (formula, preview exclusion, and 49/50, 69/70, 84/85 boundaries)');
-console.log('Scene music: PASS (unlock, crossfade, pause/resume, completion level, rapid cancellation, no duplicate loops)');
+console.log('Runtime scoring: PASS (formula, difficulty study times, no timer overrides, and 49/50, 69/70, 84/85 boundaries)');
+console.log('Gameplay clock: PASS (on time, pause/hidden freeze remaining time, no timers while frozen, cancellation, preview and hidden time unscored, no drift)');
+console.log('Scene music: PASS (deferred until card art, unlock, crossfade, pause/resume, completion level, rapid cancellation, no duplicate loops)');
+console.log('Music recovery: PASS (per-track unlock, refused play retried on a real gesture only, bounded backoff on element errors, online retry, silent while hidden)');
 console.log('Feedback: PASS (one cue per event, independent SFX/haptics, unsupported vibration guard)');
-console.log('Service-worker shell: PASS (complete, unique, both songs, no legacy active dependency, versioned cache, tolerant precache, range-capable)');
+console.log('Service-worker shell: PASS (complete, unique, both songs, card art required, required before media, revalidating, scope-isolated, deduplicated warming, no legacy active dependency, versioned cache, tolerant precache, range-capable)');

@@ -9,13 +9,31 @@ const TRACK_SOURCES = Object.freeze({
   gameplay: new URL('./Minimalist Electronic Focus Theme.mp3', import.meta.url).href,
 });
 
+// Nothing is downloaded until warmMusic() or the first gesture's unlock: the
+// card art goes first on a cold connection. play() inside the gesture loads a
+// preload="none" track just as well, so the unlock is unaffected.
 const tracks = Object.fromEntries(Object.entries(TRACK_SOURCES).map(([name, source]) => {
   const audio = new Audio(source);
   audio.loop = true;
-  audio.preload = 'auto';
+  audio.preload = 'none';
   audio.volume = 0;
   return [name, audio];
 }));
+
+// Each element is unlocked on its own: mobile browsers allow play() per
+// element, once a gesture has let it start. A play() refused for want of a
+// gesture is retried inside the next real one. Transient failures (a dropped
+// connection, a decode error) are retried a few times with backoff, and get a
+// fresh budget on the next gesture or when the network comes back.
+const RETRY_LIMIT = 3;
+const RETRY_BASE_MS = 1000;
+const GESTURE_EVENTS = ['pointerdown', 'pointerup', 'touchend', 'keydown'];
+const trackState = Object.fromEntries(Object.keys(tracks).map((name) => [name, {
+  unlocked: false,
+  needsGesture: false,
+  failures: 0,
+  retryTimer: 0,
+}]));
 
 let enabled = true;
 let masterVolume = 0.22;
@@ -23,8 +41,8 @@ let requestedScene = MUSIC_SCENES.silent;
 let requestedScale = 1;
 let fadeFrame = 0;
 let transitionRevision = 0;
-let unlocked = false;
 let unlockPromise = null;
+let gestureRetryArmed = false;
 const pendingPlay = new Map();
 
 function clamp(value, minimum = 0, maximum = 1) {
@@ -48,20 +66,88 @@ function pauseSilentTracks() {
   });
 }
 
+function startPlayback(audio) {
+  try {
+    return Promise.resolve(audio.play());
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+function markPlayable(name) {
+  const state = trackState[name];
+  state.unlocked = true;
+  state.needsGesture = false;
+  state.failures = 0;
+}
+
+function playbackFailed(name, error) {
+  // Our own pause() or load() interrupted it: not a failure.
+  if (error?.name === 'AbortError') return;
+  if (error?.name === 'NotAllowedError') {
+    trackState[name].needsGesture = true;
+    armGestureRetry();
+    return;
+  }
+  scheduleRetry(name);
+}
+
+function scheduleRetry(name) {
+  const state = trackState[name];
+  if (state.retryTimer || state.failures >= RETRY_LIMIT) return;
+  state.failures += 1;
+  state.retryTimer = setTimeout(() => {
+    state.retryTimer = 0;
+    retryTrack(name);
+  }, RETRY_BASE_MS * 2 ** (state.failures - 1));
+}
+
+function retryTrack(name) {
+  const audio = tracks[name];
+  // A failed resource has to be fetched again before it can play.
+  if (audio.error && audio.paused) audio.load();
+  // Never while hidden or unwanted: the next scene change asks again.
+  if (shouldBePlaying(name)) ensurePlaying(name, transitionRevision);
+}
+
+function freshRetryBudget() {
+  Object.values(trackState).forEach((state) => {
+    state.failures = 0;
+  });
+}
+
+function armGestureRetry() {
+  if (gestureRetryArmed) return;
+  gestureRetryArmed = true;
+  GESTURE_EVENTS.forEach((type) => document.addEventListener(type, retryOnGesture, true));
+}
+
+function disarmGestureRetry() {
+  gestureRetryArmed = false;
+  GESTURE_EVENTS.forEach((type) => document.removeEventListener(type, retryOnGesture, true));
+}
+
+// Runs inside the gesture itself, the only place play() is allowed.
+function retryOnGesture(event) {
+  if (!event.isTrusted) return;
+  freshRetryBudget();
+  Object.entries(trackState).forEach(([name, state]) => {
+    if (!state.needsGesture) return;
+    state.needsGesture = false;
+    if (shouldBePlaying(name)) ensurePlaying(name, transitionRevision);
+    else unlockTrack(name);
+  });
+  // A play() refused again re-arms it.
+  if (!Object.values(trackState).some((state) => state.needsGesture)) disarmGestureRetry();
+}
+
 function ensurePlaying(name, revision) {
   const audio = tracks[name];
   if (!audio?.paused) return Promise.resolve();
   if (pendingPlay.has(name)) return pendingPlay.get(name);
 
-  let playResult;
-  try {
-    playResult = audio.play();
-  } catch (_) {
-    playResult = Promise.reject();
-  }
-
-  const playback = Promise.resolve(playResult)
-    .catch(() => {})
+  const playback = startPlayback(audio)
+    .then(() => markPlayable(name), (error) => playbackFailed(name, error))
     .finally(() => {
       if (pendingPlay.get(name) === playback) pendingPlay.delete(name);
       if (revision !== transitionRevision && !shouldBePlaying(name)) {
@@ -130,33 +216,45 @@ export function transitionMusic(scene, { duration = 750, volumeScale = 1 } = {})
   fadeFrame = requestAnimationFrame(step);
 }
 
-export function unlockMusic() {
-  if (unlocked || unlockPromise) return unlockPromise || Promise.resolve(true);
-
-  const attempts = Object.entries(tracks).map(([name, audio]) => {
-    let playback;
-    try {
-      playback = audio.play();
-    } catch (_) {
-      playback = Promise.reject();
-    }
-
-    return Promise.resolve(playback)
-      .then(() => true, () => false)
-      .finally(() => {
-        if (!shouldBePlaying(name)) audio.pause();
-      });
-  });
-
-  unlockPromise = Promise.all(attempts)
-    .then((results) => {
-      unlocked = results.some(Boolean);
-      return unlocked;
+// play() then, unless the scene wants it, pause(): lets a later scene start
+// this element outside a gesture.
+function unlockTrack(name) {
+  const audio = tracks[name];
+  return startPlayback(audio)
+    .then(() => {
+      markPlayable(name);
+      return true;
+    }, (error) => {
+      playbackFailed(name, error);
+      return false;
     })
+    .finally(() => {
+      if (!shouldBePlaying(name)) audio.pause();
+    });
+}
+
+/** Call inside the first gesture. Resolves true once every track is unlocked. */
+export function unlockMusic() {
+  if (unlockPromise) return unlockPromise;
+  const locked = Object.keys(tracks).filter((name) => !trackState[name].unlocked);
+  if (!locked.length) return Promise.resolve(true);
+
+  unlockPromise = Promise.all(locked.map(unlockTrack))
+    .then(() => Object.values(trackState).every((state) => state.unlocked))
     .finally(() => {
       unlockPromise = null;
     });
   return unlockPromise;
+}
+
+// Starts buffering both loops. A track the unlock already asked to play is
+// loading anyway; load() on it would abort that play().
+export function warmMusic() {
+  Object.values(tracks).forEach((audio) => {
+    if (audio.preload === 'auto') return;
+    audio.preload = 'auto';
+    if (audio.paused && !audio.readyState) audio.load();
+  });
 }
 
 export function getMusicState() {
@@ -165,15 +263,29 @@ export function getMusicState() {
     enabled,
     masterVolume,
     volumeScale: requestedScale,
-    unlocked,
+    unlocked: Object.values(trackState).every((state) => state.unlocked),
     transitioning: Boolean(fadeFrame),
     tracks: Object.fromEntries(Object.entries(tracks).map(([name, audio]) => [name, {
       paused: audio.paused,
       volume: audio.volume,
       source: audio.currentSrc || audio.src,
+      unlocked: trackState[name].unlocked,
+      needsGesture: trackState[name].needsGesture,
+      failures: trackState[name].failures,
     }])),
   };
 }
+
+// A network or decode error on the element itself (not just a refused play()).
+Object.entries(tracks).forEach(([name, audio]) => {
+  audio.addEventListener?.('error', () => scheduleRetry(name));
+});
+
+// Back online: whatever gave up gets another bounded try.
+window.addEventListener?.('online', () => {
+  freshRetryBudget();
+  Object.keys(tracks).forEach(retryTrack);
+});
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {

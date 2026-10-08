@@ -3,12 +3,22 @@ import {
   configureMusic,
   transitionMusic,
   unlockMusic,
+  warmMusic,
 } from './audio-manager.js';
 import {
   configureFeedback,
   playFeedback,
   unlockFeedback,
 } from './feedback-manager.js';
+import {
+  cardArtState,
+  retryCardArt,
+  whenCardArtReady,
+} from './sprite-atlas.js';
+import { gameplayClock } from './gameplay-clock.js';
+import { isRunId, localDayKey } from './progress-model.js';
+// Records what the events below report; loaded first so it hears them all.
+import './progress-tracker.js';
 
 const STORAGE = {
   settings: 'inspireDejaVu:v1:settings',
@@ -40,6 +50,10 @@ const PATTERNS = [
   { col: 1, row: 3, name: 'purple spiral' },
 ];
 
+// Gameplay delays, in gameplay time (see gameplay-clock.js): they freeze while
+// the game is paused or hidden. With normal motion, how long a mismatch stays
+// face-up to study is a difficulty setting (runtime-config.js); 920 ms is only
+// the fallback for a board without one.
 const TIMING = Object.freeze({
   normal: Object.freeze({
     cardFlip: 430,
@@ -58,7 +72,9 @@ const TIMING = Object.freeze({
 });
 
 function timing(name) {
-  return (settings.reducedMotion ? TIMING.reduced : TIMING.normal)[name];
+  if (settings.reducedMotion) return TIMING.reduced[name];
+  if (name === 'mismatchStudy') return DIFFICULTIES[game.difficulty]?.mismatchStudyMs ?? TIMING.normal.mismatchStudy;
+  return TIMING.normal[name];
 }
 
 const DEFAULT_SETTINGS = {
@@ -89,6 +105,10 @@ const liveStatus = document.querySelector('#live-status');
 const difficultyDialog = document.querySelector('#difficulty-dialog');
 const pauseDialog = document.querySelector('#pause-dialog');
 const completeDialog = document.querySelector('#complete-dialog');
+const artDialog = document.querySelector('#art-dialog');
+const artTitle = document.querySelector('#art-title');
+const artMessage = document.querySelector('#art-message');
+const artRetryButton = document.querySelector('#btn-art-retry');
 
 // Drop keys the app no longer owns (the retired theme and colour-mode
 // pickers among them) so a save written by an older build cannot carry them
@@ -105,7 +125,6 @@ let game = createEmptyGame();
 let currentScreen = 'start';
 let started = false;
 let gameGeneration = 0;
-const gameplayTimers = new Set();
 
 function installCardFlipPolish() {
   if (document.querySelector('#deja-vu-card-flip-polish')) return;
@@ -146,8 +165,15 @@ function installCardFlipPolish() {
   document.head.append(style);
 }
 
+// A session lives as long as this page's copy of a board; it is cleared from
+// saves and replaced on Continue. A run is the game itself, from the deal to
+// completion or abandonment: its id survives saves, reloads and Continue.
 function createSessionId() {
   return crypto.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createRunId() {
+  return crypto.randomUUID?.() || `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function createEmptyGame() {
@@ -161,38 +187,89 @@ function createEmptyGame() {
     moves: 0,
     mistakes: 0,
     elapsed: 0,
+    elapsedMs: 0,
     paused: false,
     locked: false,
     turn: 'idle',
     completed: false,
     sessionId: '',
     turnId: 0,
+    runId: '',
+    // Consecutive matches since the last mistake, and the run's best.
+    chain: 0,
+    bestChain: 0,
   };
 }
 
+// Authoritative turn events for progress tracking: matches and mistakes are
+// reported here, by the rules that decided them, never read off the board.
+function emitTurnEvent(type, detail) {
+  window.dispatchEvent(new CustomEvent(type, {
+    detail: {
+      runId: game.runId,
+      difficultyKey: game.difficulty,
+      moves: game.moves,
+      mistakes: game.mistakes,
+      matchedPairs: game.matchedPairs,
+      chain: game.chain,
+      bestChain: game.bestChain,
+      ...detail,
+    },
+  }));
+}
+
+// A new game replacing an unfinished run abandons it. Leaving for the menu or
+// reloading does not: that run stays resumable with Continue.
+function abandonUnfinishedRun() {
+  const saved = readStorage(STORAGE.game, {});
+  const run = game.active && !game.completed ? game : (saved.active ? saved : null);
+  if (!run || !DIFFICULTIES[run.difficulty]) return;
+  window.dispatchEvent(new CustomEvent('deja-vu:run-abandoned', {
+    detail: {
+      runId: isRunId(run.runId) ? run.runId : null,
+      difficultyKey: run.difficulty,
+      moves: run.moves,
+      mistakes: run.mistakes,
+      matchedPairs: run.matchedPairs,
+    },
+  }));
+}
+
+// Runs in gameplay time, so a pause or a hidden page freezes it with its
+// remaining delay. The generation, session and turn guards still drop it if
+// the board or turn it belonged to has moved on by the time it fires.
 function scheduleGameplayTask(callback, delay) {
   const generation = gameGeneration;
   const sessionId = game.sessionId;
   const turnId = game.turnId;
-  const timer = window.setTimeout(() => {
-    gameplayTimers.delete(timer);
+  return gameplayClock.schedule(() => {
     if (generation !== gameGeneration) return;
     if (sessionId !== game.sessionId) return;
     if (turnId !== game.turnId) return;
     callback();
   }, delay);
-  gameplayTimers.add(timer);
-  return timer;
 }
 
-function cancelGameplayTasks() {
-  gameplayTimers.forEach((timer) => window.clearTimeout(timer));
-  gameplayTimers.clear();
-}
-
+// A new board, a resumed board, the menu or completion retires everything
+// still pending for the old one, the memorize preview included.
 function beginGameGeneration() {
-  cancelGameplayTasks();
+  gameplayClock.cancelAll();
   gameGeneration += 1;
+  window.dispatchEvent(new CustomEvent('deja-vu:game-generation'));
+}
+
+// Score time comes from gameplay-clock.js, accumulated from timestamps while
+// a game is actually being played; the memorize preview keeps itself out.
+function syncPlayClock() {
+  gameplayClock.setCounting(game.active && !game.completed && !game.paused && currentScreen === 'game');
+  captureElapsed();
+}
+
+function captureElapsed() {
+  if (!game.active && !game.completed) return;
+  const elapsedMs = Math.floor(gameplayClock.elapsedMs());
+  game.elapsedMs = elapsedMs;
+  game.elapsed = Math.floor(elapsedMs / 1000);
 }
 
 function resetTransientTurn() {
@@ -235,6 +312,7 @@ function showScreen(name) {
   });
   const activeScreen = document.querySelector(`#screen-${name}`);
   activeScreen?.focus({ preventScroll: true });
+  syncPlayClock();
   syncSceneMusic();
 }
 
@@ -332,11 +410,102 @@ function createDeck(pairCount) {
   return shuffle(pairs);
 }
 
+// A board only ever starts once its card art can be drawn. On a cold cache
+// over a slow connection, or when the sheet fails, the start waits behind a
+// small dialog that can retry or cancel; the game, its clock and the memorize
+// preview do not begin until the art is ready.
+const ART_SLOW_MS = 12000;
+const ART_STATUS = Object.freeze({
+  loading: Object.freeze({
+    title: 'Loading cards',
+    message: 'Getting the card artwork ready…',
+    retry: false,
+  }),
+  slow: Object.freeze({
+    title: 'Still loading',
+    message: 'The card artwork is taking longer than usual. Keep waiting, or try again.',
+    retry: true,
+  }),
+  failed: Object.freeze({
+    title: 'Cards didn’t load',
+    message: 'The card artwork could not be loaded. Check your connection and try again.',
+    retry: true,
+  }),
+});
+let artWait = null;
+
+function showArtStatus(kind) {
+  const status = ART_STATUS[kind];
+  artDialog.dataset.state = kind;
+  artTitle.textContent = status.title;
+  artMessage.textContent = kind === 'failed' && navigator.onLine === false
+    ? 'You’re offline, and the card artwork isn’t saved on this device yet. Reconnect and try again.'
+    : status.message;
+  artRetryButton.hidden = !status.retry;
+  if (!artDialog.open) artDialog.showModal();
+  (status.retry ? artRetryButton : artDialog.querySelector('.dialog-cancel')).focus();
+}
+
+function followCardArt(wait) {
+  window.clearTimeout(wait.slowTimer);
+  wait.slowTimer = window.setTimeout(() => {
+    if (artWait === wait) showArtStatus('slow');
+  }, ART_SLOW_MS);
+  whenCardArtReady().then(() => {
+    if (artWait !== wait) return;
+    window.clearTimeout(wait.slowTimer);
+    artWait = null;
+    if (artDialog.open) artDialog.close();
+    wait.start();
+  }, () => {
+    if (artWait !== wait) return;
+    window.clearTimeout(wait.slowTimer);
+    showArtStatus('failed');
+  });
+}
+
+function cancelArtWait() {
+  if (!artWait) return;
+  window.clearTimeout(artWait.slowTimer);
+  artWait = null;
+  if (artDialog.open) artDialog.close();
+}
+
+// The newest start wins; one already waiting is replaced, never run late.
+function whenCardArtIsReady(start) {
+  cancelArtWait();
+  if (cardArtState() === 'ready') {
+    start();
+    return;
+  }
+  const wait = { start, slowTimer: 0 };
+  artWait = wait;
+  if (cardArtState() === 'failed') {
+    showArtStatus('failed');
+    return;
+  }
+  showArtStatus('loading');
+  followCardArt(wait);
+}
+
+function retryArtWait() {
+  if (!artWait) return;
+  playFeedback('tap');
+  retryCardArt();
+  showArtStatus('loading');
+  followCardArt(artWait);
+}
+
 function startNewGame(difficultyKey, skipConfirm = false) {
   if (!DIFFICULTIES[difficultyKey]) return;
   if (!skipConfirm && game.active && !window.confirm('Start a new game? Your current board will be replaced.')) return;
+  // The current board stays intact until the new one can actually be drawn.
+  whenCardArtIsReady(() => beginNewGame(difficultyKey));
+}
 
+function beginNewGame(difficultyKey) {
   beginGameGeneration();
+  abandonUnfinishedRun();
   const difficulty = DIFFICULTIES[difficultyKey];
   game = {
     ...createEmptyGame(),
@@ -344,7 +513,9 @@ function startNewGame(difficultyKey, skipConfirm = false) {
     difficulty: difficultyKey,
     deck: createDeck(difficulty.pairs),
     sessionId: createSessionId(),
+    runId: createRunId(),
   };
+  gameplayClock.resetElapsed(0);
   statistics.played += 1;
   writeStorage(STORAGE.stats, statistics);
   saveGame();
@@ -356,12 +527,25 @@ function startNewGame(difficultyKey, skipConfirm = false) {
 }
 
 function resumeSavedGame() {
+  if (!hasValidSavedGame()) {
+    updateContinueButton();
+    return;
+  }
+  whenCardArtIsReady(continueSavedGame);
+}
+
+function continueSavedGame() {
   const saved = readStorage(STORAGE.game, {});
   if (!saved.active || !DIFFICULTIES[saved.difficulty] || !Array.isArray(saved.deck)) {
     updateContinueButton();
     return;
   }
   beginGameGeneration();
+  // The run continues under its own id. A save from before run ids gets one
+  // now; its match chain is only known from here on.
+  const runId = isRunId(saved.runId) ? saved.runId : createRunId();
+  const chainKnown = Number.isInteger(saved.chain) && Number.isInteger(saved.bestChain)
+    && saved.chain >= 0 && saved.chain <= saved.bestChain;
   game = {
     ...createEmptyGame(),
     ...saved,
@@ -373,7 +557,17 @@ function resumeSavedGame() {
     sessionId: createSessionId(),
     turnId: 0,
     deck: saved.deck.map((card) => ({ ...card })),
+    runId,
+    chain: chainKnown ? saved.chain : 0,
+    bestChain: chainKnown ? saved.bestChain : 0,
   };
+  // Saves before millisecond tracking carry whole seconds only.
+  const savedMs = Number.isInteger(saved.elapsedMs) && Math.floor(saved.elapsedMs / 1000) === saved.elapsed
+    ? saved.elapsedMs
+    : saved.elapsed * 1000;
+  gameplayClock.resetElapsed(savedMs);
+  captureElapsed();
+  if (runId !== saved.runId) saveGame();
   renderGame();
   showScreen('game');
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
@@ -382,6 +576,7 @@ function resumeSavedGame() {
 
 function saveGame() {
   if (!game.active) return;
+  captureElapsed();
   const stableGame = {
     ...game,
     open: [],
@@ -478,6 +673,11 @@ function flipCard(index) {
     scheduleGameplayTask(() => resolveMatch(firstIndex, secondIndex), timing('matchResolve'));
   } else {
     game.mistakes += 1;
+    game.chain = 0;
+    emitTurnEvent('deja-vu:mismatch', {
+      indices: [firstIndex, secondIndex],
+      patterns: [first.pattern, second.pattern],
+    });
     updateGameDisplay();
     setGameMessage('Not a match — remember both positions.', 'error');
     playFeedback('mistake');
@@ -512,7 +712,10 @@ function resolveMatch(firstIndex, secondIndex) {
   first.matched = true;
   second.matched = true;
   game.matchedPairs += 1;
+  game.chain += 1;
+  game.bestChain = Math.max(game.bestChain, game.chain);
   resetTransientTurn();
+  emitTurnEvent('deja-vu:match', { indices: [firstIndex, secondIndex], pattern: first.pattern });
 
   [firstIndex, secondIndex].forEach((index) => {
     const button = cardGrid.querySelector(`[data-index="${index}"]`);
@@ -571,11 +774,13 @@ function focusNextCard(fromIndex) {
 
 function completeGame() {
   if (!game.active || game.completed) return;
+  captureElapsed();
   game.completed = true;
   game.active = false;
   game.paused = true;
   game.locked = true;
   game.turn = 'complete';
+  gameplayClock.setCounting(false);
   beginGameGeneration();
   removeStorage(STORAGE.game);
   updateContinueButton();
@@ -608,6 +813,9 @@ function completeGame() {
   document.querySelector('#complete-time').textContent = formatTime(game.elapsed);
   document.querySelector('#complete-summary').textContent = `${game.moves} moves · ${game.mistakes} mistakes · ${formatTime(game.elapsed)}`;
   document.querySelector('#complete-score').textContent = score.toLocaleString();
+  // The one record of this run's result: progress tracking credits it once,
+  // by runId. Score, time and counts are the ones just used for the result.
+  const completedAt = Date.now();
   window.dispatchEvent(new CustomEvent('deja-vu:completion', {
     detail: {
       difficultyKey: game.difficulty,
@@ -615,6 +823,17 @@ function completeGame() {
       performancePercent,
       rating,
       newBests,
+      runId: game.runId,
+      pairs: difficulty.pairs,
+      moves: game.moves,
+      mistakes: game.mistakes,
+      perfect: game.mistakes === 0,
+      elapsed: game.elapsed,
+      elapsedMs: game.elapsedMs,
+      bestMatchChain: game.bestChain,
+      finalMatchChain: game.chain,
+      completedAt,
+      day: localDayKey(new Date(completedAt)),
     },
   }));
   syncSceneMusic();
@@ -629,9 +848,12 @@ function completeGame() {
 function pauseGame() {
   if (!game.active || game.completed || currentScreen !== 'game' || pauseDialog.open) return;
   game.paused = true;
+  syncPlayClock();
   saveGame();
   syncSceneMusic();
   pauseDialog.showModal();
+  // Turn resolution and the memorize preview hold their remaining time.
+  gameplayClock.suspend('pause');
   document.querySelector('#btn-resume').focus();
   playFeedback('tap');
 }
@@ -639,6 +861,7 @@ function pauseGame() {
 function resumeGame() {
   if (!game.active || game.completed) return;
   game.paused = false;
+  syncPlayClock();
   syncSceneMusic();
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
 }
@@ -726,7 +949,7 @@ function handleGridKeys(event) {
 }
 
 function handleMenuKeys(event) {
-  if (currentScreen !== 'menu' || difficultyDialog.open) return;
+  if (currentScreen !== 'menu' || difficultyDialog.open || artDialog.open) return;
   if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
   const buttons = [...document.querySelectorAll('.menu-nav button:not(:disabled)')];
   const currentIndex = buttons.indexOf(document.activeElement);
@@ -768,6 +991,17 @@ document.querySelector('#btn-statistics').addEventListener('click', () => {
   renderStatistics();
   showScreen('statistics');
 });
+document.querySelector('#btn-achievements').addEventListener('click', () => {
+  playFeedback('tap');
+  showScreen('achievements');
+});
+// An unlock notice's "View" button (achievements-ui.js). Notices only show
+// away from the board, so this never interrupts a game.
+window.addEventListener('deja-vu:open-achievements', () => {
+  if (currentScreen === 'game' || currentScreen === 'start' || currentScreen === 'intro') return;
+  playFeedback('tap');
+  showScreen('achievements');
+});
 document.querySelector('#btn-how-to-play').addEventListener('click', () => {
   playFeedback('tap');
   showScreen('help');
@@ -787,6 +1021,16 @@ difficultyDialog.querySelectorAll('[data-difficulty]').forEach((button) => butto
   startNewGame(button.dataset.difficulty);
 }));
 
+artRetryButton.addEventListener('click', retryArtWait);
+artDialog.querySelector('.dialog-cancel').addEventListener('click', () => {
+  playFeedback('tap');
+  cancelArtWait();
+});
+artDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  cancelArtWait();
+});
+
 document.querySelector('#btn-game-menu').addEventListener('click', () => {
   saveGame();
   playFeedback('tap');
@@ -803,7 +1047,11 @@ document.querySelector('#btn-pause-menu').addEventListener('click', () => {
   playFeedback('tap');
   showMenu();
 });
+// 'close' arrives a task after the dialog shut; rapid Escapes can reopen it
+// in between, and then play must stay frozen.
 pauseDialog.addEventListener('close', () => {
+  if (pauseDialog.open) return;
+  gameplayClock.resume('pause');
   if (currentScreen === 'game' && game.active) resumeGame();
 });
 
@@ -819,9 +1067,11 @@ document.querySelector('#btn-complete-menu').addEventListener('click', () => {
 });
 
 document.querySelector('#btn-reset-stats').addEventListener('click', () => {
-  if (!window.confirm('Reset all DEJA VU statistics? This cannot be undone.')) return;
+  if (!window.confirm('Reset all DEJA VU statistics? Achievements you have unlocked are kept. This cannot be undone.')) return;
   statistics = { ...DEFAULT_STATS, bests: {} };
   writeStorage(STORAGE.stats, statistics);
+  // Progress totals and streaks reset with the statistics they extend.
+  window.dispatchEvent(new CustomEvent('deja-vu:statistics-reset', { detail: { at: Date.now() } }));
   renderStatistics();
   announce('Statistics reset.');
   playFeedback('tap');
@@ -856,21 +1106,33 @@ document.querySelector('#setting-motion').addEventListener('change', (event) => 
   playFeedback('tap');
 });
 
+// A hidden page freezes gameplay time outright; coming back opens the pause
+// dialog, which keeps it frozen until the player resumes.
+function syncPageVisibility() {
+  if (document.hidden) gameplayClock.suspend('hidden');
+  else gameplayClock.resume('hidden');
+}
+syncPageVisibility();
+
 document.addEventListener('visibilitychange', () => {
+  syncPageVisibility();
   if (document.hidden && game.active && currentScreen === 'game') {
     game.paused = true;
+    syncPlayClock();
     saveGame();
   } else if (!document.hidden && game.active && currentScreen === 'game' && !pauseDialog.open) {
     pauseGame();
   }
 });
 
-window.setInterval(() => {
-  if (!game.active || game.paused || game.completed || currentScreen !== 'game') return;
-  game.elapsed += 1;
+// The shown time follows the score clock to the second, with no interval of
+// its own to drift; it is idle whenever the clock is.
+gameplayClock.onSecond(() => {
+  if (!game.active) return;
+  captureElapsed();
   document.querySelector('#stat-time').textContent = formatTime(game.elapsed);
   if (game.elapsed % 5 === 0) saveGame();
-}, 1000);
+});
 
 window.addEventListener('beforeunload', saveGame);
 
@@ -878,12 +1140,30 @@ installCardFlipPolish();
 applySettings();
 updateContinueButton();
 
-// Register immediately rather than on 'load'. The worker precaches the shell,
-// so starting it while the page is still settling is what makes the very first
-// online visit offline-capable. './sw.js' resolves against the document, giving
-// the correct scope on a GitHub Pages project subpath.
+// Card art first. The sheet is the one download play cannot start without, so
+// the music and the worker's precache (the whole shell, music and video
+// included) wait until it has settled instead of sharing a cold connection
+// with it. The worker then revalidates the sheet rather than fetching it
+// again. A stalled sheet only delays them, never cancels them.
+const ART_PRIORITY_CAP_MS = 10000;
+function afterCardArtSettles(callback) {
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    callback();
+  };
+  whenCardArtReady().then(run, run);
+  window.setTimeout(run, ART_PRIORITY_CAP_MS);
+}
+
+afterCardArtSettles(warmMusic);
+
+// './sw.js' resolves against the document, giving the correct scope on a
+// GitHub Pages project subpath. The first online visit still becomes
+// offline-capable during that visit: the worker claims the page on activate.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('./sw.js').then(
+  afterCardArtSettles(() => navigator.serviceWorker.register('./sw.js').then(
     (registration) => {
       // Observable during development without being noisy in production.
       if (['localhost', '127.0.0.1', '::1', ''].includes(location.hostname)) {
@@ -894,7 +1174,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       // Never swallowed: a failed registration means no offline play.
       console.error('[DEJA VU] service worker registration failed:', error);
     }
-  );
+  ));
   // The worker reports a broken precache here as well as to its own console,
   // so an incomplete offline build is visible from the page during development.
   navigator.serviceWorker.addEventListener('message', (event) => {
