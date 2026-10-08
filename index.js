@@ -1,8 +1,10 @@
 import { initAnalytics, setAnalyticsContext, trackGameEvent } from './analytics.js';
 window.addEventListener('deja-vu:achievements-unlocked', (event) => {
-  for (const achievement of event.detail?.achievements ?? []) {
-    trackGameEvent('achievement_unlocked', { achievement: achievement.id }, achievement.id);
-  }
+  try {
+    for (const achievement of event.detail?.achievements ?? []) {
+      trackGameEvent('achievement_unlocked', { achievement: achievement.id }, achievement.id);
+    }
+  } catch { /* analytics never affects achievement handling */ }
 });
 import {
   MUSIC_SCENES,
