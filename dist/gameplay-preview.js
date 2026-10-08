@@ -1,14 +1,17 @@
 // Initial DEJA VU memorization phase.
 // A fresh board is revealed immediately, then every unmatched card flips face-down
 // together before normal tap-to-match gameplay begins. Resumed games skip this phase.
+//
+// Both phases run in gameplay time (gameplay-clock.js): pausing by button or
+// Escape, or hiding the page, freezes the countdown with its remaining time,
+// and the whole preview is kept off the score clock.
+import { gameplayClock } from './gameplay-clock.js';
 
 const cardGrid = document.querySelector('#card-grid');
 const gameMessage = document.querySelector('#game-message');
 const difficultyDialog = document.querySelector('#difficulty-dialog');
 const playAgainButton = document.querySelector('#btn-play-again');
 const continueButton = document.querySelector('#btn-continue');
-const pauseButton = document.querySelector('#btn-pause');
-const pauseDialog = document.querySelector('#pause-dialog');
 
 const BALANCE = window.DEJA_VU_RUNTIME || window.DEJA_VU_BALANCE;
 const PREVIEW_CONFIG = BALANCE?.difficulties || Object.freeze({
@@ -22,37 +25,35 @@ const FLIP_SETTLE_MS = 480;
 let pendingFreshBoard = false;
 let pendingDifficulty = '';
 let previewToken = 0;
-let previewTimer = 0;
-let settleTimer = 0;
-let countdownTimer = 0;
 let previewPhase = 'idle';
-let phaseRemainingMs = 0;
-let phaseStartedAt = 0;
+let phaseEndsAt = 0;
+let cancelPhase = null;
+let cancelCountdown = null;
 let previewCards = [];
 
 function clearScheduledPreviewWork() {
-  window.clearTimeout(previewTimer);
-  window.clearTimeout(settleTimer);
-  window.clearInterval(countdownTimer);
-  previewTimer = 0;
-  settleTimer = 0;
-  countdownTimer = 0;
+  cancelPhase?.();
+  cancelCountdown?.();
+  cancelPhase = null;
+  cancelCountdown = null;
 }
 
 function clearPreviewTimers() {
   clearScheduledPreviewWork();
   previewPhase = 'idle';
-  phaseRemainingMs = 0;
-  phaseStartedAt = 0;
+  phaseEndsAt = 0;
   previewCards = [];
   previewToken += 1;
   window.DEJA_VU_PREVIEW_ACTIVE = false;
+  gameplayClock.include('preview');
 }
 
 function setPreviewInteractionLocked(locked) {
   cardGrid.classList.toggle('is-previewing', locked);
   cardGrid.setAttribute('aria-busy', locked ? 'true' : 'false');
   window.DEJA_VU_PREVIEW_ACTIVE = locked;
+  if (locked) gameplayClock.exclude('preview');
+  else gameplayClock.include('preview');
 }
 
 function difficultyFromBoard() {
@@ -70,27 +71,11 @@ function setMemorizeMessage(millisecondsRemaining) {
   gameMessage.classList.add('is-preview-message');
 }
 
-function previewCanRun() {
-  return !document.hidden && !pauseDialog?.open;
-}
-
-function updateRemainingFromElapsed() {
-  if (!phaseStartedAt || phaseRemainingMs <= 0) return;
-  phaseRemainingMs = Math.max(0, phaseRemainingMs - (performance.now() - phaseStartedAt));
-  phaseStartedAt = 0;
-}
-
-function pausePreviewClock() {
-  if (!cardGrid.classList.contains('is-previewing') || previewPhase === 'idle') return;
-  updateRemainingFromElapsed();
-  clearScheduledPreviewWork();
-}
-
 function finishPreview(token) {
   if (token !== previewToken) return;
+  clearScheduledPreviewWork();
   previewPhase = 'idle';
-  phaseRemainingMs = 0;
-  phaseStartedAt = 0;
+  phaseEndsAt = 0;
   setPreviewInteractionLocked(false);
   cardGrid.dataset.previewComplete = 'true';
   previewCards.forEach((card) => card.removeAttribute('tabindex'));
@@ -107,47 +92,41 @@ function beginSettlePhase(token) {
     card.classList.remove('is-flipped', 'is-preview-card');
   });
   gameMessage.textContent = 'Cards down… get ready.';
-  previewPhase = 'settle';
-  phaseRemainingMs = FLIP_SETTLE_MS;
-  resumePreviewClock();
+  startPhase(token, 'settle', FLIP_SETTLE_MS);
 }
 
-function resumePreviewClock() {
-  if (!cardGrid.classList.contains('is-previewing') || previewPhase === 'idle' || !previewCanRun()) return;
+function startPhase(token, phase, duration) {
   clearScheduledPreviewWork();
-  const token = previewToken;
-  phaseStartedAt = performance.now();
+  previewPhase = phase;
+  phaseEndsAt = gameplayClock.now() + duration;
+  cancelPhase = gameplayClock.schedule(() => {
+    cancelPhase = null;
+    if (token !== previewToken || previewPhase !== phase) return;
+    if (phase === 'memorize') beginSettlePhase(token);
+    else finishPreview(token);
+  }, duration);
+  if (phase === 'memorize') tickCountdown(token);
+}
 
-  if (previewPhase === 'memorize') {
-    setMemorizeMessage(phaseRemainingMs);
-    countdownTimer = window.setInterval(() => {
-      if (token !== previewToken || previewPhase !== 'memorize') return;
-      const remaining = Math.max(0, phaseRemainingMs - (performance.now() - phaseStartedAt));
-      if (remaining > 0) setMemorizeMessage(remaining);
-    }, 250);
-
-    previewTimer = window.setTimeout(() => {
-      if (token !== previewToken || previewPhase !== 'memorize') return;
-      clearScheduledPreviewWork();
-      phaseRemainingMs = 0;
-      phaseStartedAt = 0;
-      beginSettlePhase(token);
-    }, phaseRemainingMs);
-    return;
-  }
-
-  settleTimer = window.setTimeout(() => {
-    if (token !== previewToken || previewPhase !== 'settle') return;
-    clearScheduledPreviewWork();
-    finishPreview(token);
-  }, phaseRemainingMs);
+// The count shown drops as each whole second of memorize time runs out; it is
+// scheduled in gameplay time too, so it freezes with the preview.
+function tickCountdown(token) {
+  cancelCountdown = null;
+  if (token !== previewToken || previewPhase !== 'memorize') return;
+  const remaining = phaseEndsAt - gameplayClock.now();
+  if (remaining <= 0) return;
+  setMemorizeMessage(remaining);
+  cancelCountdown = gameplayClock.schedule(() => tickCountdown(token), remaining % 1000 || 1000);
 }
 
 function revealBoardForPreview() {
   const cards = [...cardGrid.querySelectorAll('.memory-card')];
   if (!cards.length) return;
 
-  clearPreviewTimers();
+  // Not clearPreviewTimers(): that would let the score clock run for an
+  // instant between the board being dealt and it being excluded again.
+  clearScheduledPreviewWork();
+  previewToken += 1;
   const token = previewToken;
   const difficultyKey = pendingDifficulty && PREVIEW_CONFIG[pendingDifficulty]
     ? pendingDifficulty
@@ -169,15 +148,11 @@ function revealBoardForPreview() {
     card.setAttribute('tabindex', '-1');
   });
 
-  previewPhase = 'memorize';
-  phaseRemainingMs = duration;
-  setMemorizeMessage(duration);
-
   requestAnimationFrame(() => {
     requestAnimationFrame(() => cardGrid.classList.remove('is-preview-revealing'));
   });
 
-  if (token === previewToken) resumePreviewClock();
+  startPhase(token, 'memorize', duration);
 }
 
 function markFreshBoardPending(difficultyKey = '') {
@@ -185,6 +160,8 @@ function markFreshBoardPending(difficultyKey = '') {
   pendingFreshBoard = true;
   pendingDifficulty = PREVIEW_CONFIG[difficultyKey] ? difficultyKey : '';
   cardGrid.dataset.previewComplete = 'false';
+  // A fresh board is about to be dealt; its first moments belong to the preview.
+  gameplayClock.exclude('preview');
 }
 
 // Capture these before index.js bubble handlers create/render the next board.
@@ -205,12 +182,15 @@ continueButton?.addEventListener('click', () => {
   cardGrid.setAttribute('aria-busy', 'false');
 }, true);
 
-// Manual pause/backgrounding freezes the study countdown instead of consuming it.
-pauseButton?.addEventListener('click', pausePreviewClock, true);
-pauseDialog?.addEventListener('close', () => requestAnimationFrame(resumePreviewClock));
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) pausePreviewClock();
-  else requestAnimationFrame(resumePreviewClock);
+// index.js retires a board (new board, resumed board, menu, completion) and
+// cancels its gameplay timers; the preview's state goes with them. A fresh
+// board already on its way keeps its place off the score clock.
+window.addEventListener('deja-vu:game-generation', () => {
+  if (previewPhase === 'idle') return;
+  clearPreviewTimers();
+  cardGrid.classList.remove('is-preview-revealing', 'is-previewing');
+  cardGrid.setAttribute('aria-busy', 'false');
+  if (pendingFreshBoard) gameplayClock.exclude('preview');
 });
 
 // Block all card activation while the initial board is being memorized or hiding.

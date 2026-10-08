@@ -42,7 +42,7 @@ try {
     assert.equal(await page.evaluate(() => localStorage.getItem('inspireDejaVu:v1:activeGame')), null);
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('inspireDejaVu:v1:statistics')).won), 1);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-    await verify(page, 'DEJA-VU-MEMORY-GAME', false, !failure);
+    await verify(page, 'DEJA-VU-MEMORY-GAME', true, !failure);
     assert.deepEqual(errors, []);
     console.log(`PASS DEJA VU gameplay/save/mobile with analytics ${failure ? 'rejected' : 'available'}`);
     await context.close();

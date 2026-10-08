@@ -23,6 +23,8 @@ export async function verify(page, game, achievementExpected, live = true) {
   assert.equal(count('high_score_achieved'), 1);
   assert.deepEqual(captures.filter(e => e.event === 'game_progress').map(e => e.properties.progress_percent), [25, 50, 75]);
   assert.equal(count('achievement_unlocked') > 0, achievementExpected);
+  const unlocks = captures.filter(e => e.event === 'achievement_unlocked').map(e => e.properties.achievement);
+  assert.equal(new Set(unlocks).size, unlocks.length, 'fresh achievements are reported once');
   const completed = captures.find(e => e.event === 'game_completed');
   assert.ok(completed.properties.score > 0);
   assert.equal(completed.properties.high_score, completed.properties.score);

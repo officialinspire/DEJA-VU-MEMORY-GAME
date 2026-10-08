@@ -6,8 +6,11 @@
     "build": "node scripts/build-dist.mjs",
     "check:dist": "node scripts/build-dist.mjs --check",
     "dev": "node scripts/serve-dist.mjs",
-    "test": "npm run test:responsive && npm run test:release && npm run check:dist && npm run test:browser",
+    "measure:sprites": "node scripts/measure-sprite-atlas.mjs",
+    "test": "npm run test:responsive && npm run test:release && npm run test:progress && npm run test:achievements && npm run check:dist && npm run test:browser",
+    "test:achievements": "node scripts/verify-achievements.mjs",
     "test:browser": "node scripts/verify-browser.mjs",
+    "test:progress": "node scripts/verify-progress.mjs",
     "test:release": "node scripts/verify-release-candidate.mjs",
     "test:responsive": "node scripts/verify-responsive.mjs",
     "test:analytics": "node --test scripts/analytics.test.mjs && node scripts/analytics-browser.mjs"

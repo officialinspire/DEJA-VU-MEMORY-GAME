@@ -15,6 +15,17 @@
     return Number.isInteger(value) && value >= 0;
   }
 
+  // Run tracking fields. Saves from before they existed have none and stay
+  // valid: index.js gives such a run an id when it is continued. An empty id
+  // is the same as none.
+  const RUN_ID = /^[A-Za-z0-9-]{8,64}$/;
+  function hasValidRunState(saved) {
+    if ('runId' in saved && saved.runId !== '' && (typeof saved.runId !== 'string' || !RUN_ID.test(saved.runId))) return false;
+    if (!('chain' in saved) && !('bestChain' in saved)) return true;
+    if (!isNonNegativeInteger(saved.chain) || !isNonNegativeInteger(saved.bestChain)) return false;
+    return saved.chain <= saved.bestChain && saved.bestChain <= saved.matchedPairs;
+  }
+
   function isValidCard(card) {
     return Boolean(
       card &&
@@ -52,6 +63,7 @@
     if (!isNonNegativeInteger(saved.moves) || !isNonNegativeInteger(saved.mistakes) || !isNonNegativeInteger(saved.elapsed)) return false;
     if (!isNonNegativeInteger(saved.matchedPairs) || saved.matchedPairs > difficulty.pairs) return false;
     if (saved.mistakes > saved.moves) return false;
+    if (!hasValidRunState(saved)) return false;
 
     const uidSet = new Set(saved.deck.map((card) => card.uid));
     if (uidSet.size !== saved.deck.length) return false;
