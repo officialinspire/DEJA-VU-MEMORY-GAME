@@ -968,6 +968,15 @@ async function auditSprites(runner, browser, baseUrl) {
     const cdp = await context.newCDPSession(page);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 2, mobile: false });
     await spritesSettled(page);
+    // CDP updates devicePixelRatio before the resolution-change repaint is delivered.
+    // Wait for the actual bitmap dimensions, then keep the full pixel assertions.
+    await page.waitForFunction(() => [...document.querySelectorAll('#card-grid .card-side')].every((side) => {
+      const canvas = side.querySelector('canvas');
+      const style = getComputedStyle(side);
+      const ratio = Math.min(devicePixelRatio, 3);
+      return canvas && Math.abs(canvas.width - Math.round(parseFloat(style.width) * ratio)) <= 1
+        && Math.abs(canvas.height - Math.round(parseFloat(style.height) * ratio)) <= 1;
+    }), null, { timeout: 5000 });
     assertBoardSprites(runner, `${label} to 2x pixel ratio`, await page.evaluate(() => window.__sprites.inspectBoard()), 30);
     for (const difficulty of DIFFICULTIES) {
       for (const viewport of [{ width: 1280, height: 720 }, { width: 1600, height: 900 }]) {

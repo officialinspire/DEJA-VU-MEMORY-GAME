@@ -504,3 +504,11 @@ html.reduced-motion .achievement-toast {
     display: none;
   }
 }
+
+/* Keep achievement results and both actions visible at desktop browser zoom.
+   Normal-height and touch layouts retain their existing spacing. */
+@media (min-width: 760px) and (hover: hover) and (pointer: fine) and (max-height: 700px) {
+  .complete-dialog:has(.completion-achievements:not([hidden])) {
+    padding-block: 0.375rem;
+  }
+}

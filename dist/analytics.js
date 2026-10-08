@@ -38,7 +38,7 @@ export function trackGameEvent(event, details = {}, once = null) {
     if (key) seen.add(key);
     const id = sessionId();
     const timestamp = new Date().toISOString(); // preserve occurrence time even if requests arrive out of order
-    const properties = { brand: 'inspire', game: 'DEJA-VU-MEMORY-GAME', game_version: '1.8.1', $process_person_profile: false, $geoip_disable: true, $session_id: id, event_sequence: ++sequence };
+    const properties = { brand: 'inspire', game: 'DEJA-VU-MEMORY-GAME', game_version: '1.8.2', $process_person_profile: false, $geoip_disable: true, $session_id: id, event_sequence: ++sequence };
     let context = {};
     try { context = getContext() ?? {}; } catch { /* context is optional */ }
     for (const [name, value] of Object.entries({ ...context, ...details })) {
