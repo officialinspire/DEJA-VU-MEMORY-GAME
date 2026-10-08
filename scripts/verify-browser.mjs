@@ -219,11 +219,20 @@ async function auditView(runner, page, label, selectors, options = {}) {
   assertEssentials(runner, label, report, options);
 }
 
+async function isolatedContext(browser, options) {
+  const context = await browser.newContext(options);
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'globalPrivacyControl', { value: true, configurable: true });
+  });
+  return context;
+}
+
 async function newPage(browser, viewport, extra = {}) {
-  const context = await browser.newContext({
+  const context = await isolatedContext(browser, {
     viewport: { width: viewport.width, height: viewport.height },
     ...extra,
   });
+  await context.addInitScript(() => Object.defineProperty(navigator, 'globalPrivacyControl', { value: true }));
   const page = await context.newPage();
   // startNewGame() confirms before replacing an in-progress board.
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
@@ -738,7 +747,7 @@ const SPRITE_EDGE_TOLERANCE = 2;
 const SPRITE_LEGACY_TOLERANCE = 8;
 
 async function spritePage(browser, baseUrl, profile, { atlasDelayMs = 0 } = {}) {
-  const context = await browser.newContext({
+  const context = await isolatedContext(browser, {
     viewport: profile.viewport,
     deviceScaleFactor: profile.deviceScaleFactor,
     isMobile: !!profile.isMobile,
@@ -957,9 +966,40 @@ async function auditSprites(runner, browser, baseUrl) {
       });
     }
     const cdp = await context.newCDPSession(page);
+    await page.evaluate(() => {
+      window.__dprEvents = [];
+      window.__dprQuery = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+      window.__dprQuery.addEventListener('change', event => window.__dprEvents.push({ matches: event.matches, ratio: devicePixelRatio, trusted: event.isTrusted }));
+    });
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 2, mobile: false });
+    // Metrics emulation updates DPR without notifying media-query listeners in
+    // current Chromium. Native media emulation flushes that display-change
+    // notification; no event or app callback is fabricated by the test.
+    await cdp.send('Emulation.setEmulatedMedia', { media: 'screen' });
+    await page.waitForFunction(() => window.__dprEvents.some(event => event.trusted && event.ratio === 2), null, { timeout: 5000 });
+    console.log('Native DPR change', await page.evaluate(() => window.__dprEvents));
     await spritesSettled(page);
+    // CDP updates devicePixelRatio before the resolution-change repaint is delivered.
+    // Wait for the actual bitmap dimensions, then keep the full pixel assertions.
+    await page.waitForFunction(() => [...document.querySelectorAll('#card-grid .card-side')].every((side) => {
+      const canvas = side.querySelector('canvas');
+      const style = getComputedStyle(side);
+      const ratio = Math.min(devicePixelRatio, 3);
+      return canvas && Math.abs(canvas.width - Math.round(parseFloat(style.width) * ratio)) <= 1
+        && Math.abs(canvas.height - Math.round(parseFloat(style.height) * ratio)) <= 1;
+    }), null, { timeout: 5000 }).catch(async error => {
+      console.error('DPR diagnostics', await page.evaluate(() => ({
+        ratio: devicePixelRatio, one: matchMedia('(resolution: 1dppx)').matches,
+        two: matchMedia('(resolution: 2dppx)').matches, events: window.__dprEvents,
+        first: [...document.querySelectorAll('#card-grid .card-side')].slice(0, 2).map(side => ({
+          cssWidth: getComputedStyle(side).width, cssHeight: getComputedStyle(side).height,
+          width: side.querySelector('canvas')?.width, height: side.querySelector('canvas')?.height,
+        })),
+      })));
+      throw error;
+    });
     assertBoardSprites(runner, `${label} to 2x pixel ratio`, await page.evaluate(() => window.__sprites.inspectBoard()), 30);
+    await cdp.send('Emulation.setEmulatedMedia', { media: '' });
     for (const difficulty of DIFFICULTIES) {
       for (const viewport of [{ width: 1280, height: 720 }, { width: 1600, height: 900 }]) {
         await page.setViewportSize(viewport);
@@ -1076,7 +1116,7 @@ function recordLoadOrder() {
 }
 
 async function sheetPage(browser, baseUrl, profile, { mode = 'pass', delayMs = 0, workers = false, seed = null } = {}) {
-  const context = await browser.newContext({ ...profile, serviceWorkers: workers ? 'allow' : 'block' });
+  const context = await isolatedContext(browser, { ...profile, serviceWorkers: workers ? 'allow' : 'block' });
   await context.addInitScript(recordLoadOrder);
   await context.addInitScript({ path: PROBES_PATH });
   if (seed) await context.addInitScript(seed);
@@ -1450,7 +1490,7 @@ async function auditLoading(runner, browser, baseUrl) {
       await rm(path.join(directory, SHEET_FILE));
       const broken = await startServer({ directory });
       try {
-        const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+        const context = await isolatedContext(browser, { viewport: { width: 1280, height: 720 } });
         contexts.push(context);
         await context.addInitScript(recordLoadOrder);
         const page = await context.newPage();
@@ -1540,7 +1580,7 @@ function lifecycleProbes() {
 }
 
 async function lifecyclePage(browser, baseUrl) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
+  const context = await isolatedContext(browser, { viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
   await context.addInitScript(lifecycleProbes);
   await context.addInitScript({ path: PROBES_PATH });
   const page = await context.newPage();
@@ -1802,7 +1842,7 @@ async function auditLifecycle(runner, browser, baseUrl) {
 const MENU_TRACK = 'Deja Vu - Main Menu (Vibe 1).mp3';
 
 async function controlledPage(browser, baseUrl) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const context = await isolatedContext(browser, { viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
   await page.goto(baseUrl, { waitUntil: 'load' });
   await page.evaluate(() => navigator.serviceWorker.ready);
@@ -1911,7 +1951,7 @@ async function auditWorker(runner, browser) {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'deja-vu-update-'));
     await cp(distDirectory, directory, { recursive: true });
     const server = await startServer({ directory });
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const context = await isolatedContext(browser, { viewport: { width: 1280, height: 720 } });
     try {
       let page = await context.newPage();
       await page.goto(server.baseUrl, { waitUntil: 'load' });
@@ -2019,7 +2059,7 @@ function progressProbes({ seed, denyStorage }) {
 }
 
 async function progressPage(browser, baseUrl, { seed = null, denyStorage = false, timezoneId, fixedTime } = {}) {
-  const context = await browser.newContext({
+  const context = await isolatedContext(browser, {
     viewport: { width: 1280, height: 800 },
     serviceWorkers: 'block',
     ...(timezoneId ? { timezoneId } : {}),
@@ -2550,7 +2590,7 @@ async function auditAchievements(runner, browser, baseUrl) {
   for (const viewport of MOBILE_VIEWPORTS) {
     const label = `layout ${viewport.name}`;
     runner.group(`achievements/${label}`);
-    const context = await browser.newContext({
+    const context = await isolatedContext(browser, {
       viewport: { width: viewport.width, height: viewport.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, serviceWorkers: 'block',
     });
     await context.addInitScript(progressProbes, { seed: { [PROGRESS_STORE]: seeded } });
@@ -2998,7 +3038,7 @@ async function main() {
 
   const runner = createRunner();
   const server = await startServer();
-  const browser = await chromium.launch({ executablePath });
+  const browser = await chromium.launch({ executablePath, headless: process.env.DEJA_VU_HEADED !== '1' });
   try {
     if (SUITE_FILTER.has('desktop')) await auditDesktop(runner, browser, server.baseUrl);
     if (SUITE_FILTER.has('intro')) await auditIntroAspectRatio(runner, browser, server.baseUrl);

@@ -232,6 +232,7 @@ const sandbox = {
   requestAnimationFrame: (callback) => callback(),
   CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
   MUSIC_SCENES: { silent: 'silent', menu: 'menu', gameplay: 'gameplay' },
+  initAnalytics() {}, setAnalyticsContext() {}, trackGameEvent() {},
   configureMusic() {}, transitionMusic() {}, unlockMusic() {},
   configureFeedback() {}, unlockFeedback() {},
   playFeedback(cue) { feedback.push(cue); },

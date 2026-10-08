@@ -19,7 +19,7 @@
 // Pages project sites live on <user>.github.io), so the cache name carries
 // this worker's scope, activate only ever clears this app's own older
 // generations, and requests outside the scope are left to the network.
-const CACHE_VERSION = 'v1.8.0';
+const CACHE_VERSION = 'v1.8.2';
 const SCOPE_PATH = new URL('./', self.location).pathname;
 const CACHE_PREFIX = 'deja-vu-';
 const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}@${SCOPE_PATH}`;
@@ -30,7 +30,7 @@ const LEGACY_CACHE = /^deja-vu-v\d+\.\d+\.\d+$/;
 const APP_SHELL = [
   './', './index.html', './styles.css', './deja-vu-backgrounds.css', './responsive-board.css',
   './matched-card-polish.css', './gameplay-preview.css', './results-ux.css', './achievements-ui.css',
-  './runtime-config.js', './gameplay-clock.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
+  './runtime-config.js', './analytics.js', './gameplay-clock.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
   './accessibility.js', './results-ux.js', './sprite-atlas.js', './save-integrity.js',
   './progress-model.js', './progress-evaluator.js', './progress-tracker.js', './achievement-catalog.js', './achievement-evaluator.js', './achievements-ui.js',
   './stats-integrity.js', './manifest.webmanifest', './card-flip-sprite-sheet.png',

@@ -1,3 +1,11 @@
+import { initAnalytics, setAnalyticsContext, trackGameEvent } from './analytics.js';
+window.addEventListener('deja-vu:achievements-unlocked', (event) => {
+  try {
+    for (const achievement of event.detail?.achievements ?? []) {
+      trackGameEvent('achievement_unlocked', { achievement: achievement.id }, achievement.id);
+    }
+  } catch { /* analytics never affects achievement handling */ }
+});
 import {
   MUSIC_SCENES,
   configureMusic,
@@ -125,6 +133,9 @@ let game = createEmptyGame();
 let currentScreen = 'start';
 let started = false;
 let gameGeneration = 0;
+
+setAnalyticsContext(() => ({ difficulty: game.difficulty, mode: 'memory', game_state: game.turn }));
+initAnalytics();
 
 function installCardFlipPolish() {
   if (document.querySelector('#deja-vu-card-flip-polish')) return;
@@ -524,6 +535,7 @@ function beginNewGame(difficultyKey) {
   showScreen('game');
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card')?.focus());
   playFeedback('start');
+  trackGameEvent('game_started', { continued: 'no' }, game.sessionId);
 }
 
 function resumeSavedGame() {
@@ -572,6 +584,7 @@ function continueSavedGame() {
   showScreen('game');
   requestAnimationFrame(() => cardGrid.querySelector('.memory-card:not(:disabled)')?.focus());
   playFeedback('tap');
+  trackGameEvent('game_started', { continued: 'yes' }, game.sessionId);
 }
 
 function saveGame() {
@@ -712,6 +725,11 @@ function resolveMatch(firstIndex, secondIndex) {
   first.matched = true;
   second.matched = true;
   game.matchedPairs += 1;
+  for (const milestone of [25, 50, 75]) {
+    if (game.matchedPairs / DIFFICULTIES[game.difficulty].pairs * 100 >= milestone) {
+      trackGameEvent('game_progress', { progress_percent: milestone }, `${game.sessionId}:${milestone}`);
+    }
+  }
   game.chain += 1;
   game.bestChain = Math.max(game.bestChain, game.chain);
   resetTransientTurn();
@@ -803,6 +821,9 @@ function completeGame() {
     score: newBests.score ? score : previous.score,
   };
   writeStorage(STORAGE.stats, statistics);
+  const result = { score, high_score: statistics.bests[game.difficulty].score, duration_seconds: game.elapsed };
+  trackGameEvent('game_completed', result, game.sessionId);
+  if (newBests.score) trackGameEvent('high_score_achieved', result, game.sessionId);
 
   const difficulty = DIFFICULTIES[game.difficulty];
   document.querySelector('#complete-grade').textContent = rating;

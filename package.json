@@ -12,7 +12,8 @@
     "test:browser": "node scripts/verify-browser.mjs",
     "test:progress": "node scripts/verify-progress.mjs",
     "test:release": "node scripts/verify-release-candidate.mjs",
-    "test:responsive": "node scripts/verify-responsive.mjs"
+    "test:responsive": "node scripts/verify-responsive.mjs",
+    "test:analytics": "node --test scripts/analytics.test.mjs && node scripts/analytics-browser.mjs"
   },
   "devDependencies": {
     "playwright": "^1.63.0"
