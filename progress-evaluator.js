@@ -22,7 +22,9 @@
 //  - Leaving for the menu, reloading or closing the page abandons nothing: the
 //    run stays resumable. A run is abandoned only when a new game replaces it.
 //  - Resetting statistics clears every total and streak (and the legacy
-//    seed), but keeps the ledger, so a replayed old event still cannot count.
+//    seed) and the bests achievements measure progress on, but keeps the
+//    ledger, so a replayed old event still cannot count, and keeps every
+//    achievement already unlocked: an award is never taken back or repeated.
 
 import {
   DIFFICULTY_KEYS,
@@ -56,7 +58,7 @@ export function validateCompletion(detail, runtime) {
   const difficulty = runtime?.difficulties?.[difficultyKey];
   if (!difficulty || !DIFFICULTY_KEYS.includes(difficultyKey)) return { ok: false, reason: 'unknown difficulty' };
 
-  const { pairs, moves, mistakes, elapsed, elapsedMs, score, bestMatchChain, finalMatchChain, day } = detail;
+  const { pairs, moves, mistakes, elapsed, elapsedMs, score, bestMatchChain, finalMatchChain, day, completedAt } = detail;
   if (pairs !== difficulty.pairs) return { ok: false, reason: 'pairs do not match the difficulty' };
   if (!isCount(moves) || !isCount(mistakes) || moves < pairs + mistakes) return { ok: false, reason: 'impossible moves or mistakes' };
   if (!isCount(elapsedMs) || elapsed !== Math.floor(elapsedMs / 1000)) return { ok: false, reason: 'inconsistent time' };
@@ -71,7 +73,19 @@ export function validateCompletion(detail, runtime) {
   return {
     ok: true,
     completion: {
-      runId, difficultyKey, pairs, moves, mistakes, elapsedMs, score, bestMatchChain, day, perfect: mistakes === 0,
+      runId,
+      difficultyKey,
+      pairs,
+      moves,
+      mistakes,
+      elapsed,
+      elapsedMs,
+      score,
+      bestMatchChain,
+      day,
+      perfect: mistakes === 0,
+      // When it happened, if the event says; only ever used as a timestamp.
+      completedAt: Number.isSafeInteger(completedAt) && completedAt > 0 ? completedAt : null,
     },
   };
 }
@@ -105,7 +119,10 @@ function creditDailyWin(daily, day) {
   daily.best = Math.max(daily.best, daily.current);
 }
 
-/** Credits a completed run once. Returns { progress, recorded, reason }. */
+/**
+ * Credits a completed run once. Returns { progress, recorded, reason }, and
+ * the validated `completion` when it was recorded.
+ */
 export function recordCompletion(progress, detail, runtime) {
   if (progress.recordedRuns.includes(detail?.runId)) return reject(progress, 'duplicate');
   const checked = validateCompletion(detail, runtime);
@@ -117,7 +134,7 @@ export function recordCompletion(progress, detail, runtime) {
   creditWin(next.byDifficulty[completion.difficultyKey], completion);
   creditDailyWin(next.daily, completion.day);
   remember(next, completion.runId);
-  return { progress: next, recorded: true, reason: 'completed' };
+  return { progress: next, recorded: true, reason: 'completed', completion };
 }
 
 /**
@@ -140,10 +157,14 @@ export function recordAbandonment(progress, detail) {
   return { progress: next, recorded: true, reason: 'abandoned' };
 }
 
-/** Statistics reset: every total and streak starts over; the ledger stays. */
+/**
+ * Statistics reset: every total, streak and best starts over; the ledger and
+ * the achievements already unlocked stay.
+ */
 export function resetProgress(progress, at) {
   const next = createEmptyProgress();
   next.recordedRuns = [...progress.recordedRuns];
+  next.achievements.unlocked = clone(progress.achievements.unlocked);
   next.resetAt = Number.isSafeInteger(at) && at >= 0 ? at : null;
   return { progress: next, recorded: true, reason: 'reset' };
 }

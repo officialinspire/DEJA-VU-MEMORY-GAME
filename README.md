@@ -4,8 +4,8 @@
 
 ### Installing for offline play
 
-1. Open the site once with a working connection and let it finish loading. The precache is 32 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
-2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>@/DEJA-VU-MEMORY-GAME/` cache with 32 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
+1. Open the site once with a working connection and let it finish loading. The precache is 34 entries, about 8.2 MB, most of it the two music tracks and the card sprite.
+2. Wait a moment for the install to complete. In DevTools this is Application → Service Workers showing **activated**, and Application → Cache Storage holding a `deja-vu-<version>@/DEJA-VU-MEMORY-GAME/` cache with 34 entries. On a local network this takes well under a second; on a slow connection it is bounded by downloading those 8.2 MB.
 3. Install the app if you want a standalone window: **Chrome/Edge desktop** — the install icon in the address bar, or ⋮ → Cast, save and share → Install. **Android Chrome** — ⋮ → Add to Home screen. **iOS Safari** — Share → Add to Home Screen (Safari has no install prompt; this is the only route).
 4. You can now go fully offline. Launching from the home screen or the installed window works with no network, as does reloading the tab.
 
@@ -85,7 +85,7 @@ Music elements are unlocked one by one. A `play()` the browser refuses for want 
 
 ## Progress tracking
 
-Durable progress for achievements, recorded from gameplay. There is no catalog or UI for it yet. It lives under its own key, `inspireDejaVu:v1:progress`, apart from the legacy statistics, which are still kept exactly as before.
+Durable progress for achievements, recorded from gameplay. It lives under its own key, `inspireDejaVu:v1:progress`, apart from the legacy statistics, which are still kept exactly as before.
 
 **Runs and sessions.** A *run* is one game from the deal to completion or abandonment. Its `runId` is saved with the game and survives saves, reloads and Continue. The `sessionId` remains per page, cleared from saves and replaced on Continue. A save from before run ids gets one when it is continued. Its match chain is only known from then on.
 
@@ -96,10 +96,11 @@ Durable progress for achievements, recorded from gameplay. There is no catalog o
 
 A match chain is the number of consecutive matches since the last mistake.
 
-**The record** (`progress-model.js`, versioned and validated on every read):
+**The record** (`progress-model.js`, version 2, validated on every read):
 - Lifetime and per-difficulty totals: wins, perfect wins, matched pairs, earned score, active play time of completed runs, best match chain, and the current and best run of consecutive perfect wins.
 - A daily win streak by the device's local calendar.
 - A ledger of the last 100 recorded run ids.
+- The achievements: what is unlocked, when and by which run, and the per-run bests their progress is measured on (see below). A win and what it unlocks are saved in the same write.
 
 A damaged field is repaired on its own. A record from a newer build is never overwritten.
 
@@ -116,7 +117,47 @@ A damaged field is repaired on its own. A record from a newer build is never ove
 - A record that is not a record is copied to `inspireDejaVu:v1:progress:corrupt` before being replaced.
 - If storage is unavailable, refuses writes (a full quota) or holds a newer build's record, progress is kept in memory for the session. Unsaved progress is written in full once storage accepts it again.
 
-**Migration.** On first load the record is seeded from the legacy statistics: earlier wins and perfect games count toward lifetime totals and are marked as `legacy`. Per-difficulty counts, pairs, score and time start from zero, since the old record never had them. `save-integrity.js` accepts saves with or without the new run fields and validates them when present. `stats-integrity.js` only ever rebuilds the statistics key, so it cannot touch progress.
+**Migration.** On first load the record is seeded from the legacy statistics: earlier wins and perfect games count toward lifetime totals and are marked as `legacy`. Per-difficulty counts, pairs, score and time start from zero, since the old record never had them. A version-1 record (from before achievements) is carried over as it is and backfilled once; an older build that meets a version-2 record leaves it alone. `save-integrity.js` accepts saves with or without the new run fields and validates them when present. `stats-integrity.js` only ever rebuilds the statistics key, so it cannot touch progress.
+
+## Achievements
+
+Exactly 100, defined in `achievement-catalog.js`. There is no achievements screen yet; `getAchievements()` from `progress-tracker.js` lists them all, and `deja-vu:achievements-unlocked` announces new unlocks with their names.
+
+Each has a permanent `id`, a DEJA VU-themed `name`, a plain `requirement`, a `category` and a `threshold`. The list adds the player's `value` (the current measure, or `null` before anything counts), `progress` (0 to 1, and 1 once unlocked), `unlocked`, `unlockedAt` (ms), the `runId` that earned it, and `backfilled`. An id is never renamed or reused, because unlocks are stored under it.
+
+| Category | Count | Requirement |
+|---|---|---|
+| Lifetime wins | 15 | Win 1, 3, 5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 750, 1,000 games |
+| Difficulty wins | 20 | Win 1, 5, 10, 25, 50 games on each of the four difficulties |
+| Perfect wins | 10 | Win 1, 2, 3, 5, 10, 20, 35, 50, 75, 100 games without a mistake |
+| Matched pairs | 10 | Match 25 to 10,000 pairs in games you win |
+| Speed | 10 | Win a board within a time, with at most a third as many mistakes as it has pairs |
+| Score | 10 | EXCELLENT on each difficulty; 95% in one game; 5,000, 10,000 and 14,000 in one game; 100,000 and 500,000 earned in total |
+| Perfect streaks | 10 | Win 2 to 25 games in a row without a mistake |
+| Daily streaks | 10 | Win on 2 to 100 days in a row |
+| Challenges | 5 | Flawless Insanity (a perfect Insane game), Unbroken Thread (a 12-match chain), Perfect Prism (a perfect game on every difficulty), Four Rooms, One Day (every difficulty won on one day), Lightning Recall (a perfect Advanced game in 30 s) |
+
+**Thresholds come from the game itself.**
+- **Speed:** each tier is a time budget per pair on the real board. Easy and Intermediate get 5 s and 3.5 s per pair; Advanced and Insane also get 2.5 s. That gives Easy 30/21 s, Intermediate 40/28 s, Advanced 50/35/25 s and Insane 75/52/37 s. The mistake limits are 2, 2, 3 and 5.
+- **Score:** each single-game score is the score of a stated reference game, worked out by `runtime-config.js`'s `calculateScore`. 5,000 is an Easy game with 2 mistakes in 60 s, 10,000 an Insane game with 10 mistakes in 5 minutes, and 14,000 a perfect Insane game in 200 s. EXCELLENT is the runtime's own band.
+- **Times** are gameplay seconds, so the memorize preview and pauses never count.
+- **Attainability:** `npm run test:achievements` models a player clicking each card at a deliberate 450 ms with animations on, using index.js's real match, mismatch-study and flip-back delays. Every speed goal is within reach even with every allowed mistake, and every score reference is playable. A simulated career of valid completions at that pace unlocks all 100. The browser suite plays a perfect Insane board at full animation timing and reaches the fastest Insane goal.
+
+**Rules** (`achievement-evaluator.js`, pure):
+- **When it runs.** Achievements are evaluated only when a completion has just been recorded: valid, and new by its `runId`. They are also evaluated once when a record is created or carried over from version 1. Matches, mismatches, abandoned runs and resets can raise nothing, so they never trigger an evaluation.
+- **Award once.** Each achievement is awarded once, stamped with the completion's time and run, and never changed afterwards. A replayed completion, before or after a reload, is refused before it gets here.
+- **No reward for spam or worse play.** No measure counts moves, mistakes or time upward. Speed goals ignore wins over their mistake limit, so mashing cards quickly never qualifies. Score goals use the game's own scoring. The tests check that a worse game (more mistakes, more time) never unlocks or advances anything a better one would not.
+- **Reloads.** Reloads earn nothing. Continue never replays the memorize preview, and a mistake is saved before the page unloads, so a reload mid-turn cannot erase it.
+- **Perfect** means no mistake. A *chain* is consecutive matches since the last mistake, and only chains in games you win count. A perfect game is one chain of all its pairs.
+- **Reset statistics** clears progress toward achievements, but never takes back one already unlocked. Unlocked ones show as complete; locked ones measure from the reset.
+
+**Backfill** (once, when a record is created or migrated). Only what earlier history proves is credited, marked `backfilled` with no `runId` and the time of the backfill:
+- **A version-1 record's totals and streaks**, which were tracked as they happened.
+- **The legacy statistics' win and perfect-game counts.**
+- **Each difficulty's best entry**, which proves a win there and its fewest mistakes.
+- **The legacy best score.** The old record keeps each best (time, mistakes, score) separately, possibly from three different games, so only the best score describes one whole game. With the game's scoring and the other two bests, it bounds that game's mistakes and time. What every such game has in common is proven: for example, a best Easy score of 5,900 proves a perfect game of at most 20 s.
+
+No per-difficulty win count, pair total, streak or day is invented. A legacy Insane best can unlock *Win an Insane game*, but *Win 5 Insane games* counts tracked wins only.
 
 ## Asset loading
 
@@ -127,7 +168,7 @@ The card sprite sheet is the one download play cannot start without, so it goes 
 - The service worker registers once the sheet has settled (10 s at most), so its 8 MB precache never shares a cold connection with it.
 - Starting a game (New Game, Play Again, Continue) waits for the art. If it is ready, as it is on every warm visit, the board starts immediately. If not, a small **Loading cards** dialog appears; after 12 s it offers **Try again** alongside waiting. If the sheet fails (missing, unreachable or undecodable) it says so, and says when the device is offline, and offers **Try again**. **Cancel** or Escape backs out to the picker, and a sheet arriving afterwards starts nothing. The board, its clock and the memorize preview start only once the art can be drawn, so no memorize time is spent looking at blank cards.
 
-The sheet ships as the original PNG. A lossless WebP of it is 28% smaller (1.44 MB) and pixel-identical, but producing it needs libwebp's `cwebp` (Chromium's own lossless encoder only reaches 1.90 MB), and the build has no way to check a derivative still matches the PNG. Lossy WebP changes pixels. So no derivative is shipped. `npm test` runs the source-level checks (responsive/gameplay, release-candidate audio/scoring/app-shell, progress, `dist/` parity) and then the rendered-behavior suite described below. `npm run dev` serves the built app at `http://127.0.0.1:4173` for browser testing.
+The sheet ships as the original PNG. A lossless WebP of it is 28% smaller (1.44 MB) and pixel-identical, but producing it needs libwebp's `cwebp` (Chromium's own lossless encoder only reaches 1.90 MB), and the build has no way to check a derivative still matches the PNG. Lossy WebP changes pixels. So no derivative is shipped. `npm test` runs the source-level checks (responsive/gameplay, release-candidate audio/scoring/app-shell, progress, achievements, `dist/` parity) and then the rendered-behavior suite described below. `npm run dev` serves the built app at `http://127.0.0.1:4173` for browser testing.
 
 ## Rendered-behavior tests
 
@@ -163,6 +204,10 @@ It covers:
   - Replacing a clean run, or one with a mistake, is handled as abandonment.
   - Wins in America/Los_Angeles are dated by the local day, with a second win the same day, the next day and a missed day.
   - A corrupt record is kept aside and replaced, and with storage denied entirely the game still completes and is tracked for the session.
+  - A first win unlocks its achievements stamped with its run and time, announced once; all 100 are listed with progress; a replay, before or after a reload, awards nothing.
+  - A perfect Insane board with animations on reaches the fastest Insane speed goal and the top score goals.
+  - Reloading during a mismatch's study time keeps the mistake, so that win earns no perfect achievement.
+  - Old statistics backfill exactly the achievements they prove, without per-difficulty counts.
 
 Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,loading,lifecycle,progress`.
 
@@ -171,6 +216,15 @@ Narrow a run while iterating with `--suite=desktop,intro,mobile,offline,sprites,
 - every refusal reason, perfect and daily streaks, abandonment and reset;
 - reload, duplicate, corrupt, newer, denied and full storage;
 - confirmation that the two integrity guards keep progress and migrate saves.
+
+`npm run test:achievements` covers the achievements in Node:
+- **The catalog:** exactly 100, in the requested allocation, with stable unique ids and names and plain requirements.
+- **Thresholds:** derived from board sizes, scoring and turn timings, and attainable at a human pace.
+- **Boundaries:** each threshold met exactly at its edge and not one step short.
+- **Award once:** duplicates and resets.
+- **No reward for spam or worse play.**
+- **Backfill:** legacy-statistics proofs, version-1 migration, and idempotence.
+- **Tracker storage:** unlock events, reload, reset, migration, newer records and a full quota.
 
 ### Checking loading by hand
 
@@ -210,6 +264,7 @@ Other behavior worth knowing:
 - Working-memory board ratings: EXCELLENT 85–100%, GOOD 70–84%, AVERAGE 50–69%, and POOR 0–49%
 - Local autosave with Continue Game
 - Persistent statistics and personal bests
+- 100 achievements tracked from gameplay (no achievements screen yet)
 - Scene-aware menu/gameplay music with smooth crossfades and persistent volume controls
 - Restrained synthesized selection, match, mistake, menu, start, and completion feedback
 - Independent, persistent SFX and best-effort haptic controls; vibration availability depends on the mobile browser
@@ -232,6 +287,7 @@ Other behavior worth knowing:
 - `feedback-manager.js` — synthesized UI cues and guarded mobile vibration feedback
 - `gameplay-clock.js` — pausable gameplay time: turn and preview timers that freeze with the game, and the score clock
 - `progress-model.js` / `progress-evaluator.js` / `progress-tracker.js` — the versioned progress record, the pure rules that update it, and the event listener that stores it
+- `achievement-catalog.js` / `achievement-evaluator.js` — the 100 achievements with thresholds derived from the boards and scoring, and the pure rules that award, backfill and describe them
 - `sprite-atlas.js` — measured card rectangles in the sprite sheet, and each card side's canvas, painted at the card's real pixel size from a bounded cache of sized crops
 - `sw.js` / `manifest.webmanifest` — offline and installable web app support
 - `scripts/build-dist.mjs` — deterministic `dist/` build and parity validation
@@ -242,6 +298,7 @@ Other behavior worth knowing:
 - `scripts/generate-icons.mjs` — regenerates the PWA icons from the card back in the sprite sheet
 - `scripts/browser-harness.mjs` / `scripts/browser-probes.js` — Chromium discovery, subpath test server, and the in-page measurement helpers
 - `scripts/verify-progress.mjs` — progress record, evaluator, storage and integrity-guard checks
+- `scripts/verify-achievements.mjs` — achievement catalog, threshold, evaluator, backfill and storage checks
 - `scripts/sprite-probes.js` / `scripts/measure-sprite-atlas.mjs` — canvas instrumentation and sprite crop checks for the browser suite, and the sprite cost meter
 - `scripts/mobile-layout-baseline.json` — recorded phone and tablet geometry the suite guards
 - `Deja-Vu-Banner.png` — Open Graph / Twitter Card image used when the site link is shared

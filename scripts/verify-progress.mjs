@@ -98,6 +98,13 @@ function verifyModel() {
   assert.ok(!repaired.progress.recordedRuns.includes('bad id!'), 'invalid run ids are dropped');
   assert.equal(new Set(repaired.progress.recordedRuns).size, LEDGER_LIMIT, 'and duplicates');
 
+  const v1 = { ...createEmptyProgress(), version: 1, totals: { ...createEmptyProgress().totals, wins: 4, perfectWins: 1 } };
+  delete v1.achievements;
+  const carried = readProgress(JSON.stringify(v1));
+  assert.equal(carried.status, 'migrated', 'a version-1 record is carried over, to be backfilled');
+  assert.deepEqual([carried.progress.version, carried.progress.totals.wins, carried.progress.totals.perfectWins], [2, 4, 1]);
+  assert.deepEqual(carried.progress.achievements, createEmptyProgress().achievements);
+
   const unversioned = readProgress(JSON.stringify({ totals: { wins: 2 } }));
   assert.equal(unversioned.status, 'repaired', 'a record without a version is salvaged, not trusted');
   assert.equal(unversioned.progress.totals.wins, 2);
@@ -391,6 +398,6 @@ verifyEvaluator();
 await verifyGuards();
 await verifyTracker();
 
-console.log('Progress record: PASS (versioned, field-by-field repair, newer builds left alone, bounded ledger, calendar days, legacy seed)');
+console.log('Progress record: PASS (versioned, version-1 migration, field-by-field repair, newer builds left alone, bounded ledger, calendar days, legacy seed)');
 console.log('Progress evaluator: PASS (wins/perfect/pairs/score/time/chains per difficulty, runtime scoring, refusals, perfect and daily streaks, abandonment, reset)');
 console.log('Progress storage: PASS (reload, duplicates, corrupt, newer, denied and full storage; integrity guards keep progress and migrate saves)');

@@ -1939,7 +1939,7 @@ const STATS_STORE = 'inspireDejaVu:v1:statistics';
 // reload), with reduced motion so turns resolve quickly.
 function progressProbes({ seed, denyStorage }) {
   window.__events = [];
-  for (const type of ['deja-vu:completion', 'deja-vu:match', 'deja-vu:mismatch', 'deja-vu:run-abandoned', 'deja-vu:progress-updated']) {
+  for (const type of ['deja-vu:completion', 'deja-vu:match', 'deja-vu:mismatch', 'deja-vu:run-abandoned', 'deja-vu:progress-updated', 'deja-vu:achievements-unlocked']) {
     window.addEventListener(type, (event) => window.__events.push({ type, detail: JSON.parse(JSON.stringify(event.detail ?? null)) }));
   }
   if (denyStorage) {
@@ -1976,6 +1976,12 @@ async function progressPage(browser, baseUrl, { seed = null, denyStorage = false
 }
 
 const storedJson = (page, key) => page.evaluate((name) => JSON.parse(localStorage.getItem(name) || 'null'), key);
+const SETTINGS_STORE = 'inspireDejaVu:v1:settings';
+// Animations on: the slower of the two motion settings, as most players have it.
+const FULL_MOTION = { [SETTINGS_STORE]: JSON.stringify({ reducedMotion: false, music: false, sfx: false }) };
+const unlockedBy = (progress, runId) => Object.entries(progress.achievements.unlocked)
+  .filter(([, award]) => award.runId === runId).map(([id]) => id).sort();
+const trackedAchievements = (page) => page.evaluate(async () => (await import('./progress-tracker.js')).getAchievements());
 const progressEvents = (page, type) => page.evaluate((name) => window.__events.filter((event) => event.type === name).map((event) => event.detail), type);
 
 async function cardPairs(page) {
@@ -2085,15 +2091,90 @@ async function auditProgress(runner, browser, baseUrl) {
       assert.deepEqual([stats.played, stats.won, stats.perfect], [1, 1, 1]);
       assert.equal(stats.bests.easy.score, completion.score);
     });
+    const firstUnlocks = ['easy-wins-1', 'excellent-easy', 'performance-95', 'perfect-1', 'score-1', 'speed-easy-1', 'speed-easy-2', 'wins-1'].sort();
+    check('the win unlocks its achievements, stamped with the run and its time', () => {
+      assert.ok(completion.elapsed <= 21, `played in ${completion.elapsed} s`);
+      assert.deepEqual(Object.keys(progress.achievements.unlocked).sort(), firstUnlocks);
+      assert.deepEqual(unlockedBy(progress, completion.runId), firstUnlocks);
+      assert.ok(Object.values(progress.achievements.unlocked).every((award) => award.at === completion.completedAt));
+    });
+    const announced = await progressEvents(page, 'deja-vu:achievements-unlocked');
+    check('and announces them once', () => {
+      assert.equal(announced.length, 1);
+      assert.equal(announced[0].runId, completion.runId);
+      assert.deepEqual(announced[0].achievements.map((item) => item.id).sort(), firstUnlocks);
+      assert.ok(announced[0].achievements.every((item) => item.name && item.requirement && item.unlockedAt === completion.completedAt));
+    });
+    const listed = await trackedAchievements(page);
+    check('all 100 are listed with progress and unlock times', () => {
+      assert.equal(listed.length, 100);
+      assert.deepEqual(listed.filter((item) => item.unlocked).map((item) => item.id).sort(), firstUnlocks);
+      assert.deepEqual(listed.find((item) => item.id === 'wins-3').progress, 1 / 3);
+      assert.equal(listed.find((item) => item.id === 'flawless-insanity').value, null);
+    });
     await page.evaluate((detail) => window.dispatchEvent(new CustomEvent('deja-vu:completion', { detail })), completion);
     const afterDuplicate = await storedJson(page, PROGRESS_STORE);
-    check('a duplicate completion is not counted', () => assert.equal(afterDuplicate.totals.wins, 1));
+    check('a duplicate completion is not counted', () => {
+      assert.equal(afterDuplicate.totals.wins, 1);
+      assert.deepEqual(afterDuplicate.achievements, progress.achievements, 'or awarded');
+    });
+    const announcedAgain = await progressEvents(page, 'deja-vu:achievements-unlocked');
+    check('nor announced', () => assert.equal(announcedAgain.length, 1));
     await page.reload({ waitUntil: 'load' });
     await page.evaluate((detail) => window.dispatchEvent(new CustomEvent('deja-vu:completion', { detail })), completion);
     const afterReload = await storedJson(page, PROGRESS_STORE);
+    const reannounced = await progressEvents(page, 'deja-vu:achievements-unlocked');
     check('after a reload the record holds, and the replay is still refused', () => {
       assert.equal(afterReload.totals.wins, 1);
       assert.deepEqual(afterReload.recordedRuns, [completion.runId]);
+      assert.deepEqual(afterReload.achievements, progress.achievements);
+      assert.deepEqual(reannounced, []);
+    });
+  });
+
+  await scenario('achievements with animations on', { seed: FULL_MOTION }, async (page, check) => {
+    await freshBoard(page, 'insane');
+    await finishBoard(page);
+    const [completion] = await progressEvents(page, 'deja-vu:completion');
+    const progress = await storedJson(page, PROGRESS_STORE);
+    const expected = [
+      'excellent-insane', 'flawless-insanity', 'insane-wins-1', 'perfect-1', 'performance-95', 'score-1', 'score-2', 'score-3',
+      'speed-insane-1', 'speed-insane-2', 'speed-insane-3', 'unbroken-thread', 'wins-1',
+    ].sort();
+    check('a perfect Insane board at full animation timing reaches the top speed and score goals', () => {
+      // Every turn waits out the real match resolution; the 8 s preview is not counted.
+      assert.ok(completion.elapsedMs >= 15 * 460, `${completion.elapsedMs} ms is faster than the turn timings allow`);
+      assert.ok(completion.elapsed <= 37, `played in ${completion.elapsed} s`);
+      assert.deepEqual([completion.mistakes, completion.bestMatchChain], [0, 15]);
+      assert.deepEqual(unlockedBy(progress, completion.runId), expected);
+      assert.deepEqual(progress.achievements.bests.insane, {
+        fewestMistakes: 0, fastestSharpWin: completion.elapsed, fastestPerfectWin: completion.elapsed, topScore: completion.score,
+      });
+    });
+  });
+
+  await scenario('a reload cannot erase a mistake', { seed: FULL_MOTION }, async (page, check) => {
+    await freshBoard(page);
+    const pairs = await cardPairs(page);
+    await page.evaluate(([a, b]) => {
+      document.querySelector(`#card-grid [data-index="${a}"]`).click();
+      document.querySelector(`#card-grid [data-index="${b}"]`).click();
+    }, [pairs[0][0], pairs[1][0]]);
+    await page.waitForFunction(() => window.__events.some((event) => event.type === 'deja-vu:mismatch'), null, { timeout: 5000 });
+    // Reload while both cards are still face up for study, before the turn
+    // has finished and autosaved.
+    await continueAfterReload(page);
+    const resumed = await storedJson(page, GAME_STORE);
+    const shown = await page.textContent('#stat-mistakes');
+    check('the mistake survives the reload', () => assert.deepEqual([resumed.mistakes, shown], [1, '1']));
+    await finishBoard(page);
+    const [completion] = await progressEvents(page, 'deja-vu:completion');
+    const progress = await storedJson(page, PROGRESS_STORE);
+    check('so the win is not perfect, and earns no perfect achievement', () => {
+      assert.deepEqual([completion.mistakes, completion.perfect], [1, false]);
+      assert.ok(Object.hasOwn(progress.achievements.unlocked, 'wins-1'));
+      assert.ok(!Object.keys(progress.achievements.unlocked).some((id) => /^perfect|flawless|lightning/.test(id)));
+      assert.equal(progress.achievements.bests.easy.fewestMistakes, 1);
     });
   });
 
@@ -2145,9 +2226,16 @@ async function auditProgress(runner, browser, baseUrl) {
       seed: { [GAME_STORE]: JSON.stringify(legacySave), [STATS_STORE]: JSON.stringify(legacyStats) },
     }, async (page, check) => {
       const seeded = await storedJson(page, PROGRESS_STORE);
+      const backfilled = ['easy-wins-1', 'excellent-easy', 'perfect-1', 'score-1', 'wins-1'].sort();
       check('old statistics seed the record on first load', () => {
         assert.deepEqual([seeded.totals.wins, seeded.totals.perfectWins], [2, 1]);
         assert.deepEqual(seeded.legacy, { wins: 2, perfectWins: 1 });
+      });
+      check('and backfill exactly the achievements they prove', () => {
+        assert.deepEqual(unlockedBy(seeded, null), backfilled);
+        assert.deepEqual(Object.keys(seeded.achievements.unlocked).sort(), backfilled);
+        assert.equal(seeded.byDifficulty.easy.wins, 0, 'without inventing per-difficulty wins');
+        assert.deepEqual(seeded.achievements.bests.easy, { fewestMistakes: 0, fastestSharpWin: 160, fastestPerfectWin: null, topScore: 5200 });
       });
       await continueAfterReload(page);
       const migrated = await storedJson(page, GAME_STORE);
@@ -2164,6 +2252,11 @@ async function auditProgress(runner, browser, baseUrl) {
         assert.deepEqual([completion.moves, completion.mistakes, completion.bestMatchChain], [7, 1, 4]);
         assert.deepEqual([progress.totals.wins, progress.byDifficulty.easy.wins, progress.totals.perfectWins], [3, 1, 1]);
         assert.equal(stats.won, 3, 'legacy statistics agree');
+      });
+      check('the run earns what it adds; the backfilled ones keep their stamps', () => {
+        assert.ok(unlockedBy(progress, completion.runId).includes('wins-3'));
+        assert.deepEqual(unlockedBy(progress, null), backfilled);
+        for (const id of backfilled) assert.deepEqual(progress.achievements.unlocked[id], seeded.achievements.unlocked[id]);
       });
     });
   }
@@ -2247,7 +2340,7 @@ async function auditProgress(runner, browser, baseUrl) {
     const repaired = await storedJson(page, PROGRESS_STORE);
     check('the damaged record is kept aside and replaced on load', () => {
       assert.equal(backup, '{"version":1,"totals":{');
-      assert.equal(repaired.version, 1);
+      assert.equal(repaired.version, 2);
     });
     await freshBoard(page);
     await finishBoard(page);
@@ -2268,6 +2361,11 @@ async function auditProgress(runner, browser, baseUrl) {
       assert.equal(tracked.progress.totals.wins, 1);
       assert.deepEqual(tracked.progress.recordedRuns, [completion.runId]);
       assert.equal(tracked.status.persistent, false, 'claims to have saved progress');
+    });
+    const listed = await trackedAchievements(page);
+    check('achievements are tracked for the session too', () => {
+      const first = listed.find((item) => item.id === 'wins-1');
+      assert.deepEqual([first.unlocked, first.runId, first.unlockedAt], [true, completion.runId, completion.completedAt]);
     });
   });
 }
