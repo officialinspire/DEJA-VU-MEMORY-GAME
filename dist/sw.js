@@ -13,14 +13,14 @@
 // old and new assets. A new worker precaches into a new cache and then waits:
 // it activates on the next cold start, once no page is controlled by the old
 // worker. Reloading a tab does not hand over, by design.
-const CACHE_VERSION = 'v1.3.0';
+const CACHE_VERSION = 'v1.3.1';
 const CACHE_NAME = `deja-vu-${CACHE_VERSION}`;
 const CACHE_PREFIX = 'deja-vu-';
 
 const APP_SHELL = [
   './', './index.html', './styles.css', './deja-vu-backgrounds.css', './responsive-board.css',
   './matched-card-polish.css', './gameplay-preview.css', './results-ux.css',
-  './runtime-config.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
+  './runtime-config.js', './analytics.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
   './accessibility.js', './results-ux.js', './sprite-atlas.js', './save-integrity.js',
   './stats-integrity.js', './manifest.webmanifest', './card-flip-sprite-sheet.png',
   './logo.png', './inspiresoftwareintro.mp4',

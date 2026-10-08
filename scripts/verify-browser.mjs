@@ -183,6 +183,7 @@ async function newPage(browser, viewport, extra = {}) {
     viewport: { width: viewport.width, height: viewport.height },
     ...extra,
   });
+  await context.addInitScript(() => Object.defineProperty(navigator, 'globalPrivacyControl', { value: true }));
   const page = await context.newPage();
   // startNewGame() confirms before replacing an in-progress board.
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
