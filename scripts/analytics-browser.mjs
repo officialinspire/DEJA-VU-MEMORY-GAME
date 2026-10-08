@@ -16,7 +16,13 @@ try {
     page.on('console', e => { if (e.type() === 'error') errors.push(e.text()); });
     await page.goto(server.baseUrl);
     await page.locator('#screen-start').click();
-    await page.locator('#btn-skip-intro').click();
+    await page.waitForFunction(() => ['#btn-skip-intro', '#btn-new-game']
+      .some(selector => document.querySelector(selector)?.getClientRects().length));
+    if (!await page.locator('#btn-new-game').isVisible()) {
+      await page.locator('#btn-skip-intro').click({ timeout: 5000 }).catch(async error => {
+        if (!await page.locator('#btn-new-game').isVisible()) throw error;
+      });
+    }
     await page.locator('#btn-new-game').click();
     await page.locator('[data-difficulty="easy"]').click();
     await page.waitForFunction(() => !document.querySelector('#card-grid').classList.contains('is-previewing'));
