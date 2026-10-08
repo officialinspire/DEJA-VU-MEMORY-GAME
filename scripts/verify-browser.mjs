@@ -219,8 +219,16 @@ async function auditView(runner, page, label, selectors, options = {}) {
   assertEssentials(runner, label, report, options);
 }
 
+async function isolatedContext(browser, options) {
+  const context = await browser.newContext(options);
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'globalPrivacyControl', { value: true, configurable: true });
+  });
+  return context;
+}
+
 async function newPage(browser, viewport, extra = {}) {
-  const context = await browser.newContext({
+  const context = await isolatedContext(browser, {
     viewport: { width: viewport.width, height: viewport.height },
     ...extra,
   });
@@ -739,7 +747,7 @@ const SPRITE_EDGE_TOLERANCE = 2;
 const SPRITE_LEGACY_TOLERANCE = 8;
 
 async function spritePage(browser, baseUrl, profile, { atlasDelayMs = 0 } = {}) {
-  const context = await browser.newContext({
+  const context = await isolatedContext(browser, {
     viewport: profile.viewport,
     deviceScaleFactor: profile.deviceScaleFactor,
     isMobile: !!profile.isMobile,
@@ -1077,7 +1085,7 @@ function recordLoadOrder() {
 }
 
 async function sheetPage(browser, baseUrl, profile, { mode = 'pass', delayMs = 0, workers = false, seed = null } = {}) {
-  const context = await browser.newContext({ ...profile, serviceWorkers: workers ? 'allow' : 'block' });
+  const context = await isolatedContext(browser, { ...profile, serviceWorkers: workers ? 'allow' : 'block' });
   await context.addInitScript(recordLoadOrder);
   await context.addInitScript({ path: PROBES_PATH });
   if (seed) await context.addInitScript(seed);
@@ -1451,7 +1459,7 @@ async function auditLoading(runner, browser, baseUrl) {
       await rm(path.join(directory, SHEET_FILE));
       const broken = await startServer({ directory });
       try {
-        const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+        const context = await isolatedContext(browser, { viewport: { width: 1280, height: 720 } });
         contexts.push(context);
         await context.addInitScript(recordLoadOrder);
         const page = await context.newPage();
@@ -1541,7 +1549,7 @@ function lifecycleProbes() {
 }
 
 async function lifecyclePage(browser, baseUrl) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
+  const context = await isolatedContext(browser, { viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
   await context.addInitScript(lifecycleProbes);
   await context.addInitScript({ path: PROBES_PATH });
   const page = await context.newPage();
@@ -1803,7 +1811,7 @@ async function auditLifecycle(runner, browser, baseUrl) {
 const MENU_TRACK = 'Deja Vu - Main Menu (Vibe 1).mp3';
 
 async function controlledPage(browser, baseUrl) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const context = await isolatedContext(browser, { viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
   await page.goto(baseUrl, { waitUntil: 'load' });
   await page.evaluate(() => navigator.serviceWorker.ready);
@@ -1912,7 +1920,7 @@ async function auditWorker(runner, browser) {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'deja-vu-update-'));
     await cp(distDirectory, directory, { recursive: true });
     const server = await startServer({ directory });
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const context = await isolatedContext(browser, { viewport: { width: 1280, height: 720 } });
     try {
       let page = await context.newPage();
       await page.goto(server.baseUrl, { waitUntil: 'load' });
@@ -2020,7 +2028,7 @@ function progressProbes({ seed, denyStorage }) {
 }
 
 async function progressPage(browser, baseUrl, { seed = null, denyStorage = false, timezoneId, fixedTime } = {}) {
-  const context = await browser.newContext({
+  const context = await isolatedContext(browser, {
     viewport: { width: 1280, height: 800 },
     serviceWorkers: 'block',
     ...(timezoneId ? { timezoneId } : {}),
@@ -2551,7 +2559,7 @@ async function auditAchievements(runner, browser, baseUrl) {
   for (const viewport of MOBILE_VIEWPORTS) {
     const label = `layout ${viewport.name}`;
     runner.group(`achievements/${label}`);
-    const context = await browser.newContext({
+    const context = await isolatedContext(browser, {
       viewport: { width: viewport.width, height: viewport.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, serviceWorkers: 'block',
     });
     await context.addInitScript(progressProbes, { seed: { [PROGRESS_STORE]: seeded } });
