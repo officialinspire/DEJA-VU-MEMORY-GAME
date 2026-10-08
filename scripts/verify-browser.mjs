@@ -966,6 +966,11 @@ async function auditSprites(runner, browser, baseUrl) {
       });
     }
     const cdp = await context.newCDPSession(page);
+    await page.evaluate(() => {
+      window.__dprEvents = [];
+      window.__dprQuery = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+      window.__dprQuery.addEventListener('change', event => window.__dprEvents.push({ matches: event.matches, ratio: devicePixelRatio }));
+    });
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, deviceScaleFactor: 2, mobile: false });
     await spritesSettled(page);
     // CDP updates devicePixelRatio before the resolution-change repaint is delivered.
@@ -976,7 +981,17 @@ async function auditSprites(runner, browser, baseUrl) {
       const ratio = Math.min(devicePixelRatio, 3);
       return canvas && Math.abs(canvas.width - Math.round(parseFloat(style.width) * ratio)) <= 1
         && Math.abs(canvas.height - Math.round(parseFloat(style.height) * ratio)) <= 1;
-    }), null, { timeout: 5000 });
+    }), null, { timeout: 5000 }).catch(async error => {
+      console.error('DPR diagnostics', await page.evaluate(() => ({
+        ratio: devicePixelRatio, one: matchMedia('(resolution: 1dppx)').matches,
+        two: matchMedia('(resolution: 2dppx)').matches, events: window.__dprEvents,
+        first: [...document.querySelectorAll('#card-grid .card-side')].slice(0, 2).map(side => ({
+          cssWidth: getComputedStyle(side).width, cssHeight: getComputedStyle(side).height,
+          width: side.querySelector('canvas')?.width, height: side.querySelector('canvas')?.height,
+        })),
+      })));
+      throw error;
+    });
     assertBoardSprites(runner, `${label} to 2x pixel ratio`, await page.evaluate(() => window.__sprites.inspectBoard()), 30);
     for (const difficulty of DIFFICULTIES) {
       for (const viewport of [{ width: 1280, height: 720 }, { width: 1600, height: 900 }]) {

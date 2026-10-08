@@ -455,7 +455,7 @@ async function verifyAppShell() {
   const shellEntries = [...shellBody.matchAll(/'([^']+)'/g)].map((match) => match[1]);
   const shellSet = new Set(shellEntries);
   assert.equal(shellEntries.length, shellSet.size, 'service-worker app shell has no duplicate entries');
-  assert.match(swSource, /const CACHE_VERSION = 'v1\.8\.2';/, 'cache version is bumped for this release');
+  assert.match(swSource, /const CACHE_VERSION = 'v1\.8\.3';/, 'cache version is bumped for this release');
   assert.match(swSource, /const CACHE_NAME = `\$\{CACHE_PREFIX\}\$\{CACHE_VERSION\}@\$\{SCOPE_PATH\}`;/,
     'cache name is derived from CACHE_VERSION and the worker scope');
   assert.match(swSource, /if \(!url\.pathname\.startsWith\(SCOPE_PATH\)\) return;\n/, 'requests outside the scope are left alone');

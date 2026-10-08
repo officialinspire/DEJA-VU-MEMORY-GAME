@@ -288,8 +288,10 @@ function scheduleRepaint(side) {
 
 // A DPR change without a CSS size change (moving a window to another display)
 // never reaches the ResizeObserver, so it repaints everything itself.
+// Retain the active query for the lifetime of its change listener.
+let pixelRatioQuery = null;
 function watchPixelRatio() {
-  const query = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+  const query = pixelRatioQuery = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
   if (!query?.addEventListener) return;
   query.addEventListener('change', () => {
     trackedSides.forEach((state, side) => {
