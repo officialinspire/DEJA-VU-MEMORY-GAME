@@ -1,7 +1,9 @@
+import { createAttribution } from './attribution.js';
 /** Best-effort, anonymous game events. No SDK, storage, or network work on startup. */
 
 // A project token is public and can only send data; never put a personal API key here.
 const TOKEN = 'phc_wpvFbvptidYWtnkJG8EdMMhaXn6s2ZDznzNUha5V4KRm';
+const attributionProperties = createAttribution();
 const ENDPOINT = 'https://us.i.posthog.com/i/v0/e/';
 const EVENTS = new Set([
   'game_opened', 'game_started', 'game_progress', 'game_completed', 'game_over', 'high_score_achieved',
@@ -32,13 +34,14 @@ export function setAnalyticsContext(provider) {
 
 export function trackGameEvent(event, details = {}, once = null) {
   try {
-    if (!EVENTS.has(event) || globalThis.navigator?.globalPrivacyControl === true || globalThis.navigator?.onLine === false) return;
+    if (!EVENTS.has(event) || globalThis.navigator?.doNotTrack === '1' || globalThis.navigator?.globalPrivacyControl === true || globalThis.navigator?.onLine === false) return;
     const key = once == null ? null : `${event}:${once}`;
     if (key && seen.has(key)) return;
     if (key) seen.add(key);
     const id = sessionId();
     const timestamp = new Date().toISOString(); // preserve occurrence time even if requests arrive out of order
     const properties = { brand: 'inspire', game: 'DEJA-VU-MEMORY-GAME', game_version: '1.8.2', $process_person_profile: false, $geoip_disable: true, $session_id: id, event_sequence: ++sequence };
+    Object.assign(properties, attributionProperties(), { game_id: 'DEJA-VU-MEMORY-GAME' });
     let context = {};
     try { context = getContext() ?? {}; } catch { /* context is optional */ }
     for (const [name, value] of Object.entries({ ...context, ...details })) {
