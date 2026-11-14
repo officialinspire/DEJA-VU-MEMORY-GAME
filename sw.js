@@ -30,7 +30,7 @@ const LEGACY_CACHE = /^deja-vu-v\d+\.\d+\.\d+$/;
 const APP_SHELL = [
   './', './index.html', './styles.css', './deja-vu-backgrounds.css', './responsive-board.css',
   './matched-card-polish.css', './gameplay-preview.css', './results-ux.css', './achievements-ui.css',
-  './runtime-config.js', './analytics.js', './gameplay-clock.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
+  './runtime-config.js', './analytics.js', './attribution.js', './gameplay-clock.js', './index.js', './audio-manager.js', './feedback-manager.js', './gameplay-preview.js', './input-guard.js',
   './accessibility.js', './results-ux.js', './sprite-atlas.js', './save-integrity.js',
   './progress-model.js', './progress-evaluator.js', './progress-tracker.js', './achievement-catalog.js', './achievement-evaluator.js', './achievements-ui.js',
   './stats-integrity.js', './manifest.webmanifest', './card-flip-sprite-sheet.png',
